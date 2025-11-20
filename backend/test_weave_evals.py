@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from app.vision import get_vision_analyzer
 from app.dataset import get_dataset_loader
 from app.evaluation import (
-    SurgicalVisionModel,
     run_evaluation,
     medical_accuracy_scorer,
     guideline_compliance_scorer,
@@ -61,11 +60,6 @@ async def main():
     print("✓ Vision analyzer initialized")
     print()
 
-    # Create model
-    model = SurgicalVisionModel(analyzer=analyzer)
-    print("✓ Surgical Vision Model created")
-    print()
-
     # Prepare evaluation dataset (first 3 frames from video01)
     videos = loader.get_all_videos()
     test_video = videos[0]
@@ -92,26 +86,19 @@ async def main():
 
     # Run Weave Evaluation
     print("🚀 Running W&B Weave Evaluation...")
-
-    # Generate unique evaluation name with timestamp
-    from datetime import datetime
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    eval_name = f"surgical-vision-eval-{timestamp}"
-    print(f"📝 Evaluation name: {eval_name}")
     print()
 
     try:
         results = await run_evaluation(
             dataset=eval_dataset,
-            model=model,
+            analyzer=analyzer,
             scorers=[
                 medical_accuracy_scorer,
                 guideline_compliance_scorer,
                 clarity_scorer,
                 educational_value_scorer,
                 total_score_scorer
-            ],
-            evaluation_name=eval_name
+            ]
         )
 
         print("=" * 70)

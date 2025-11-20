@@ -257,23 +257,8 @@ def get_evaluator() -> Optional[VisionEvaluator]:
 # W&B Weave Evaluations Integration
 # ============================================================
 
-class SurgicalVisionModel(weave.Model):
-    """Surgical Vision Analysis Model for Weave Evaluations"""
-
-    analyzer: Any
-
-    @weave.op()
-    async def predict(self, input: str) -> Dict[str, Any]:
-        """
-        Predict surgical analysis for an image
-
-        Args:
-            input: Path to surgical frame image
-
-        Returns:
-            Dictionary with analysis results
-        """
-        return self.analyzer.analyze_frame(input)
+# Note: W&B Weave Evaluations work best with simple @weave.op() functions,
+# not weave.Model classes. The model function is created dynamically in run_evaluation().
 
 
 # Global evaluator instance for scorers
@@ -288,12 +273,12 @@ def _get_evaluator_instance() -> VisionEvaluator:
 
 
 @weave.op()
-async def medical_accuracy_scorer(output: Dict) -> Dict:
+async def medical_accuracy_scorer(model_output: Dict) -> Dict:
     """
     Score medical accuracy of vision analysis
 
     Args:
-        output: Output from the vision model
+        model_output: Output from the vision model (matches Weave convention)
 
     Returns:
         Dictionary with medical_accuracy score (0-5)
@@ -301,22 +286,22 @@ async def medical_accuracy_scorer(output: Dict) -> Dict:
     evaluator = _get_evaluator_instance()
 
     result = evaluator.judge_vision_result(
-        step=output.get("step", "Unknown"),
-        instruments=output.get("instruments", []),
-        risk=output.get("risk", "Unknown"),
-        description=output.get("description", "")
+        step=model_output.get("step", "Unknown"),
+        instruments=model_output.get("instruments", []),
+        risk=model_output.get("risk", "Unknown"),
+        description=model_output.get("description", "")
     )
 
     return {"medical_accuracy": result.get("medical_accuracy", 0)}
 
 
 @weave.op()
-async def guideline_compliance_scorer(output: Dict) -> Dict:
+async def guideline_compliance_scorer(model_output: Dict) -> Dict:
     """
     Score guideline compliance of vision analysis
 
     Args:
-        output: Output from the vision model
+        model_output: Output from the vision model
 
     Returns:
         Dictionary with guideline_compliance score (0-5)
@@ -324,22 +309,22 @@ async def guideline_compliance_scorer(output: Dict) -> Dict:
     evaluator = _get_evaluator_instance()
 
     result = evaluator.judge_vision_result(
-        step=output.get("step", "Unknown"),
-        instruments=output.get("instruments", []),
-        risk=output.get("risk", "Unknown"),
-        description=output.get("description", "")
+        step=model_output.get("step", "Unknown"),
+        instruments=model_output.get("instruments", []),
+        risk=model_output.get("risk", "Unknown"),
+        description=model_output.get("description", "")
     )
 
     return {"guideline_compliance": result.get("guideline_compliance", 0)}
 
 
 @weave.op()
-async def clarity_scorer(output: Dict) -> Dict:
+async def clarity_scorer(model_output: Dict) -> Dict:
     """
     Score clarity of vision analysis description
 
     Args:
-        output: Output from the vision model
+        model_output: Output from the vision model
 
     Returns:
         Dictionary with clarity score (0-5)
@@ -347,22 +332,22 @@ async def clarity_scorer(output: Dict) -> Dict:
     evaluator = _get_evaluator_instance()
 
     result = evaluator.judge_vision_result(
-        step=output.get("step", "Unknown"),
-        instruments=output.get("instruments", []),
-        risk=output.get("risk", "Unknown"),
-        description=output.get("description", "")
+        step=model_output.get("step", "Unknown"),
+        instruments=model_output.get("instruments", []),
+        risk=model_output.get("risk", "Unknown"),
+        description=model_output.get("description", "")
     )
 
     return {"clarity": result.get("clarity", 0)}
 
 
 @weave.op()
-async def educational_value_scorer(output: Dict) -> Dict:
+async def educational_value_scorer(model_output: Dict) -> Dict:
     """
     Score educational value of vision analysis
 
     Args:
-        output: Output from the vision model
+        model_output: Output from the vision model
 
     Returns:
         Dictionary with educational_value score (0-5)
@@ -370,22 +355,22 @@ async def educational_value_scorer(output: Dict) -> Dict:
     evaluator = _get_evaluator_instance()
 
     result = evaluator.judge_vision_result(
-        step=output.get("step", "Unknown"),
-        instruments=output.get("instruments", []),
-        risk=output.get("risk", "Unknown"),
-        description=output.get("description", "")
+        step=model_output.get("step", "Unknown"),
+        instruments=model_output.get("instruments", []),
+        risk=model_output.get("risk", "Unknown"),
+        description=model_output.get("description", "")
     )
 
     return {"educational_value": result.get("educational_value", 0)}
 
 
 @weave.op()
-async def total_score_scorer(output: Dict) -> Dict:
+async def total_score_scorer(model_output: Dict) -> Dict:
     """
     Score total evaluation (sum of all metrics)
 
     Args:
-        output: Output from the vision model
+        model_output: Output from the vision model
 
     Returns:
         Dictionary with total_score (0-20)
@@ -393,10 +378,10 @@ async def total_score_scorer(output: Dict) -> Dict:
     evaluator = _get_evaluator_instance()
 
     result = evaluator.judge_vision_result(
-        step=output.get("step", "Unknown"),
-        instruments=output.get("instruments", []),
-        risk=output.get("risk", "Unknown"),
-        description=output.get("description", "")
+        step=model_output.get("step", "Unknown"),
+        instruments=model_output.get("instruments", []),
+        risk=model_output.get("risk", "Unknown"),
+        description=model_output.get("description", "")
     )
 
     return {"total_score": result.get("total_score", 0)}
@@ -404,18 +389,16 @@ async def total_score_scorer(output: Dict) -> Dict:
 
 async def run_evaluation(
     dataset: List[Dict[str, Any]],
-    model: SurgicalVisionModel,
-    scorers: Optional[List] = None,
-    evaluation_name: Optional[str] = None
+    analyzer: Any,
+    scorers: Optional[List] = None
 ) -> Any:
     """
     Run W&B Weave Evaluation on surgical vision dataset
 
     Args:
         dataset: List of examples with 'input' (image path) and optional 'reference_answer'
-        model: SurgicalVisionModel instance to evaluate
+        analyzer: Vision analyzer instance
         scorers: List of scorer functions (default: all scorers)
-        evaluation_name: Optional name for the evaluation (default: auto-generated with timestamp)
 
     Returns:
         Evaluation results
@@ -433,10 +416,9 @@ async def run_evaluation(
 
         from app.vision import get_vision_analyzer
         analyzer = get_vision_analyzer()
-        model = SurgicalVisionModel(analyzer=analyzer)
 
         import asyncio
-        results = asyncio.run(run_evaluation(dataset, model, evaluation_name="my-eval-v1"))
+        results = asyncio.run(run_evaluation(dataset, analyzer))
     """
     if scorers is None:
         scorers = [
@@ -447,16 +429,15 @@ async def run_evaluation(
             total_score_scorer
         ]
 
-    # Generate unique evaluation name if not provided
-    if evaluation_name is None:
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        evaluation_name = f"surgical-vision-eval-{timestamp}"
+    # Create model function (simple @weave.op() function, not weave.Model)
+    @weave.op()
+    async def surgical_vision_model(input: str) -> dict:
+        """Surgical vision analysis model"""
+        return analyzer.analyze_frame(input)
 
     evaluation = weave.Evaluation(
         dataset=dataset,
-        scorers=scorers,
-        name=evaluation_name
+        scorers=scorers
     )
 
-    return await evaluation.evaluate(model)
+    return await evaluation.evaluate(surgical_vision_model)
