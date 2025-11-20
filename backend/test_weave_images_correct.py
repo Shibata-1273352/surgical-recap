@@ -1,12 +1,13 @@
-"""Test W&B Weave Evaluations with wandb.Image for better visualization"""
+"""Test W&B Weave Evaluations with proper image display using Data URI"""
 
 import os
 import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 import weave
-import wandb
 from PIL import Image
+import base64
+import io
 
 from app.vision import get_vision_analyzer
 from app.dataset import get_dataset_loader
@@ -16,26 +17,49 @@ from app.evaluation import get_evaluator
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 
-@weave.op()
-async def surgical_vision_model_with_wandb_image(input: str) -> dict:
+def image_to_data_uri(image_path: str, max_size: int = 600) -> str:
     """
-    Surgical vision model that returns both analysis and wandb.Image
+    Convert image to Data URI for inline display in browsers
+
+    Args:
+        image_path: Path to image file
+        max_size: Maximum width/height for thumbnail
+
+    Returns:
+        Data URI string (data:image/png;base64,...)
+    """
+    with Image.open(image_path) as img:
+        # Resize to reduce payload size
+        img.thumbnail((max_size, max_size))
+
+        # Convert to PNG bytes
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        img_bytes = buffer.getvalue()
+
+        # Encode to base64
+        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+
+        # Return as Data URI
+        return f"data:image/png;base64,{img_base64}"
+
+
+@weave.op()
+async def surgical_vision_model_with_image(input: str) -> dict:
+    """
+    Surgical vision model that returns analysis with inline image
 
     Args:
         input: Path to surgical frame image
 
     Returns:
-        Dictionary with analysis results AND wandb.Image object
+        Dictionary with analysis results AND image as Data URI
     """
     analyzer = get_vision_analyzer()
     result = analyzer.analyze_frame(input)
 
-    # Add wandb.Image to result for better visualization
-    with Image.open(input) as img:
-        # Resize for faster display (optional)
-        img.thumbnail((600, 600))
-        result['image'] = wandb.Image(img)
-
+    # Add image as Data URI for proper display
+    result['image_url'] = image_to_data_uri(input)
     result['image_path'] = input
 
     return result
@@ -45,43 +69,30 @@ async def surgical_vision_model_with_wandb_image(input: str) -> dict:
 async def medical_accuracy_scorer(model_output: dict) -> dict:
     """Score medical accuracy"""
     evaluator = get_evaluator()
-    result = evaluator.judge_vision_result(
+    judge_result = evaluator.judge_vision_result(
         step=model_output.get("step", "Unknown"),
         instruments=model_output.get("instruments", []),
         risk=model_output.get("risk", "Unknown"),
         description=model_output.get("description", "")
     )
-    return {"medical_accuracy": result.get("medical_accuracy", 0)}
-
-
-@weave.op()
-async def clarity_scorer(model_output: dict) -> dict:
-    """Score clarity"""
-    evaluator = get_evaluator()
-    result = evaluator.judge_vision_result(
-        step=model_output.get("step", "Unknown"),
-        instruments=model_output.get("instruments", []),
-        risk=model_output.get("risk", "Unknown"),
-        description=model_output.get("description", "")
-    )
-    return {"clarity": result.get("clarity", 0)}
+    return {"medical_accuracy": judge_result.get("medical_accuracy", 0)}
 
 
 @weave.op()
 async def total_score_scorer(model_output: dict) -> dict:
     """Score total"""
     evaluator = get_evaluator()
-    result = evaluator.judge_vision_result(
+    judge_result = evaluator.judge_vision_result(
         step=model_output.get("step", "Unknown"),
         instruments=model_output.get("instruments", []),
         risk=model_output.get("risk", "Unknown"),
         description=model_output.get("description", "")
     )
-    return {"total_score": result.get("total_score", 0)}
+    return {"total_score": judge_result.get("total_score", 0)}
 
 
 async def main():
-    print("Testing W&B Weave Evaluations with wandb.Image")
+    print("Testing W&B Weave Evaluations with Data URI Images")
     print("=" * 70)
 
     # Initialize Weave
@@ -106,11 +117,11 @@ async def main():
     # Create evaluation
     evaluation = weave.Evaluation(
         dataset=dataset,
-        scorers=[medical_accuracy_scorer, clarity_scorer, total_score_scorer]
+        scorers=[medical_accuracy_scorer, total_score_scorer]
     )
 
-    print("🚀 Running evaluation with wandb.Image logging...")
-    results = await evaluation.evaluate(surgical_vision_model_with_wandb_image)
+    print("🚀 Running evaluation with Data URI images...")
+    results = await evaluation.evaluate(surgical_vision_model_with_image)
 
     print()
     print("=" * 70)
@@ -119,9 +130,11 @@ async def main():
     print()
     print(f"🔗 View at: https://wandb.ai/{entity}/{project}/weave")
     print()
-    print("✨ Images should now be visible in:")
-    print("   1. Traces tab → Click on any trace → See 'image' field with thumbnail")
-    print("   2. Evals tab → Click on evaluation → See images in sample details")
+    print("✨ Images should now display properly:")
+    print("   1. Traces tab → Click trace → 'image_url' field shows inline image")
+    print("   2. Evals tab → Click evaluation → Images visible in samples")
+    print()
+    print("📌 Note: Look for 'image_url' field with data:image/png;base64,... value")
     print()
 
 

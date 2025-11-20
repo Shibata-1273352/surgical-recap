@@ -291,58 +291,67 @@ asyncio.run(main())
 
 評価結果とともに手術画像を表示することができます。
 
-#### 方法1: wandb.Imageを使用（推奨）
+#### 推奨方法: Data URI形式
 
-```python
-import wandb
-from PIL import Image
-
-@weave.op()
-async def model_with_image(input: str) -> dict:
-    analyzer = get_vision_analyzer()
-    result = analyzer.analyze_frame(input)
-
-    # wandb.Imageを追加
-    with Image.open(input) as img:
-        img.thumbnail((600, 600))  # リサイズ（オプション）
-        result['image'] = wandb.Image(img)
-
-    return result
-```
-
-**表示される場所**:
-- **Tracesタブ**: 各トレースの詳細で`image`フィールドにサムネイル表示
-- **Evalsタブ**: サンプル詳細で画像プレビュー
-
-#### 方法2: Base64エンコード
+W&B Weaveで画像を正しく表示するには、**Data URI形式**を使用します。
 
 ```python
 import base64
 import io
 from PIL import Image
 
-def image_to_base64(image_path: str) -> str:
+def image_to_data_uri(image_path: str, max_size: int = 600) -> str:
+    """
+    画像をData URI形式に変換してインライン表示可能にする
+
+    Args:
+        image_path: 画像ファイルのパス
+        max_size: サムネイルの最大幅/高さ
+
+    Returns:
+        Data URI文字列 (data:image/png;base64,...)
+    """
     with Image.open(image_path) as img:
-        img.thumbnail((400, 400))
+        # サイズ削減のためリサイズ
+        img.thumbnail((max_size, max_size))
+
+        # PNGバイトに変換
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
-        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+        img_bytes = buffer.getvalue()
+
+        # Base64エンコード
+        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+
+        # Data URIとして返す
+        return f"data:image/png;base64,{img_base64}"
 
 @weave.op()
-async def model_with_base64(input: str) -> dict:
+async def surgical_vision_model_with_image(input: str) -> dict:
+    """
+    画像とともに解析結果を返すVisionモデル
+    """
+    analyzer = get_vision_analyzer()
     result = analyzer.analyze_frame(input)
-    result['image_base64'] = image_to_base64(input)
+
+    # Data URI形式で画像を追加
+    result['image_url'] = image_to_data_uri(input)
+    result['image_path'] = input
+
     return result
 ```
 
+**表示される場所**:
+- **Tracesタブ**: 各トレースの詳細で`image_url`フィールドにインライン画像表示
+- **Evalsタブ**: サンプル詳細で画像プレビュー
+
 **テストスクリプト**:
 ```bash
-# wandb.Image版
-uv run python test_weave_with_wandb_images.py
-
-# Base64版
-uv run python test_weave_with_images.py
+# Data URI版（推奨）
+uv run python test_weave_images_correct.py
 ```
+
+**注意**: `wandb.Image`オブジェクトはWeave UIで正しくシリアライズされないため、Data URI形式を使用してください。
 
 ---
 
