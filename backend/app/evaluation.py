@@ -5,6 +5,7 @@ import json
 from typing import Dict, List, Optional, Any
 from openai import AzureOpenAI
 import weave
+from pydantic import BaseModel
 
 
 # Judge System Prompt
@@ -250,3 +251,213 @@ def get_evaluator() -> Optional[VisionEvaluator]:
     except ValueError as e:
         print(f"Warning: {e}")
         return None
+
+
+# ============================================================
+# W&B Weave Evaluations Integration
+# ============================================================
+
+class SurgicalVisionModel(weave.Model):
+    """Surgical Vision Analysis Model for Weave Evaluations"""
+
+    analyzer: Any
+
+    @weave.op()
+    def predict(self, image_path: str) -> Dict[str, Any]:
+        """
+        Predict surgical analysis for an image
+
+        Args:
+            image_path: Path to surgical frame image
+
+        Returns:
+            Dictionary with analysis results
+        """
+        return self.analyzer.analyze_frame(image_path)
+
+
+# Global evaluator instance for scorers
+_evaluator_instance = None
+
+def _get_evaluator_instance() -> VisionEvaluator:
+    """Get or create global evaluator instance"""
+    global _evaluator_instance
+    if _evaluator_instance is None:
+        _evaluator_instance = VisionEvaluator()
+    return _evaluator_instance
+
+
+@weave.op()
+def medical_accuracy_scorer(output: Dict, **kwargs) -> Dict:
+    """
+    Score medical accuracy of vision analysis
+
+    Args:
+        output: Output from the vision model
+        **kwargs: Additional arguments (e.g., example data)
+
+    Returns:
+        Dictionary with medical_accuracy score (0-5)
+    """
+    evaluator = _get_evaluator_instance()
+
+    result = evaluator.judge_vision_result(
+        step=output.get("step", "Unknown"),
+        instruments=output.get("instruments", []),
+        risk=output.get("risk", "Unknown"),
+        description=output.get("description", ""),
+        reference_answer=kwargs.get("reference_answer")
+    )
+
+    return {"medical_accuracy": result.get("medical_accuracy", 0)}
+
+
+@weave.op()
+def guideline_compliance_scorer(output: Dict, **kwargs) -> Dict:
+    """
+    Score guideline compliance of vision analysis
+
+    Args:
+        output: Output from the vision model
+        **kwargs: Additional arguments (e.g., example data)
+
+    Returns:
+        Dictionary with guideline_compliance score (0-5)
+    """
+    evaluator = _get_evaluator_instance()
+
+    result = evaluator.judge_vision_result(
+        step=output.get("step", "Unknown"),
+        instruments=output.get("instruments", []),
+        risk=output.get("risk", "Unknown"),
+        description=output.get("description", ""),
+        reference_answer=kwargs.get("reference_answer")
+    )
+
+    return {"guideline_compliance": result.get("guideline_compliance", 0)}
+
+
+@weave.op()
+def clarity_scorer(output: Dict, **kwargs) -> Dict:
+    """
+    Score clarity of vision analysis description
+
+    Args:
+        output: Output from the vision model
+        **kwargs: Additional arguments (e.g., example data)
+
+    Returns:
+        Dictionary with clarity score (0-5)
+    """
+    evaluator = _get_evaluator_instance()
+
+    result = evaluator.judge_vision_result(
+        step=output.get("step", "Unknown"),
+        instruments=output.get("instruments", []),
+        risk=output.get("risk", "Unknown"),
+        description=output.get("description", ""),
+        reference_answer=kwargs.get("reference_answer")
+    )
+
+    return {"clarity": result.get("clarity", 0)}
+
+
+@weave.op()
+def educational_value_scorer(output: Dict, **kwargs) -> Dict:
+    """
+    Score educational value of vision analysis
+
+    Args:
+        output: Output from the vision model
+        **kwargs: Additional arguments (e.g., example data)
+
+    Returns:
+        Dictionary with educational_value score (0-5)
+    """
+    evaluator = _get_evaluator_instance()
+
+    result = evaluator.judge_vision_result(
+        step=output.get("step", "Unknown"),
+        instruments=output.get("instruments", []),
+        risk=output.get("risk", "Unknown"),
+        description=output.get("description", ""),
+        reference_answer=kwargs.get("reference_answer")
+    )
+
+    return {"educational_value": result.get("educational_value", 0)}
+
+
+@weave.op()
+def total_score_scorer(output: Dict, **kwargs) -> Dict:
+    """
+    Score total evaluation (sum of all metrics)
+
+    Args:
+        output: Output from the vision model
+        **kwargs: Additional arguments (e.g., example data)
+
+    Returns:
+        Dictionary with total_score (0-20)
+    """
+    evaluator = _get_evaluator_instance()
+
+    result = evaluator.judge_vision_result(
+        step=output.get("step", "Unknown"),
+        instruments=output.get("instruments", []),
+        risk=output.get("risk", "Unknown"),
+        description=output.get("description", ""),
+        reference_answer=kwargs.get("reference_answer")
+    )
+
+    return {"total_score": result.get("total_score", 0)}
+
+
+async def run_evaluation(
+    dataset: List[Dict[str, Any]],
+    model: SurgicalVisionModel,
+    scorers: Optional[List] = None
+) -> Any:
+    """
+    Run W&B Weave Evaluation on surgical vision dataset
+
+    Args:
+        dataset: List of examples with 'image_path' and optional 'reference_answer'
+        model: SurgicalVisionModel instance to evaluate
+        scorers: List of scorer functions (default: all scorers)
+
+    Returns:
+        Evaluation results
+
+    Example:
+        dataset = [
+            {
+                "image_path": "path/to/frame1.jpg",
+                "reference_answer": {"step": "Dissection", "instruments": ["Grasper"], "risk": "Low"}
+            },
+            {
+                "image_path": "path/to/frame2.jpg"
+            }
+        ]
+
+        from app.vision import get_vision_analyzer
+        analyzer = get_vision_analyzer()
+        model = SurgicalVisionModel(analyzer=analyzer)
+
+        import asyncio
+        results = asyncio.run(run_evaluation(dataset, model))
+    """
+    if scorers is None:
+        scorers = [
+            medical_accuracy_scorer,
+            guideline_compliance_scorer,
+            clarity_scorer,
+            educational_value_scorer,
+            total_score_scorer
+        ]
+
+    evaluation = weave.Evaluation(
+        dataset=dataset,
+        scorers=scorers
+    )
+
+    return await evaluation.evaluate(model)
