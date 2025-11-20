@@ -291,22 +291,30 @@ asyncio.run(main())
 
 評価結果とともに手術画像を表示することができます。
 
-#### 推奨方法: Data URI形式
+**重要**: 画像は標準で自動的に含まれます。追加の設定は不要です。
 
-W&B Weaveで画像を正しく表示するには、**Data URI形式**を使用します。
+#### 実装方法: Dict Input with Embedded Image (推奨)
+
+W&B Weaveのトレース一覧に画像サムネイルを表示するため、**辞書形式のinputに画像を含める**方法を採用しています。
+
+現在の実装では、評価実行時に自動的に以下が行われます：
+1. 手術画像を150pxの軽量サムネイルにリサイズ
+2. PNG形式でBase64エンコード
+3. Data URI形式（`data:image/png;base64,...`）に変換
+4. `input`フィールドの辞書に`image`として含める
 
 ```python
 import base64
 import io
 from PIL import Image
 
-def image_to_data_uri(image_path: str, max_size: int = 600) -> str:
+def image_to_data_uri(image_path: str, max_size: int = 150) -> str:
     """
     画像をData URI形式に変換してインライン表示可能にする
 
     Args:
         image_path: 画像ファイルのパス
-        max_size: サムネイルの最大幅/高さ
+        max_size: サムネイルの最大幅/高さ（トレース一覧用）
 
     Returns:
         Data URI文字列 (data:image/png;base64,...)
@@ -326,32 +334,85 @@ def image_to_data_uri(image_path: str, max_size: int = 600) -> str:
         # Data URIとして返す
         return f"data:image/png;base64,{img_base64}"
 
+# データセット作成（inputに画像を含める）
+eval_dataset = []
+for frame in sequence:
+    eval_dataset.append({
+        "input": {
+            "image": image_to_data_uri(frame['image_path'], max_size=150),
+            "image_path": frame['image_path'],
+            "frame_id": frame['frame_id']
+        }
+    })
+
+# モデル関数（辞書形式のinputを受け取る）
 @weave.op()
-async def surgical_vision_model_with_image(input: str) -> dict:
+async def surgical_vision_model_with_image(input: dict) -> dict:
     """
     画像とともに解析結果を返すVisionモデル
+
+    Args:
+        input: {'image': data_uri, 'image_path': path, 'frame_id': id}
     """
     analyzer = get_vision_analyzer()
-    result = analyzer.analyze_frame(input)
+    result = analyzer.analyze_frame(input['image_path'])
 
-    # Data URI形式で画像を追加
-    result['image_url'] = image_to_data_uri(input)
-    result['image_path'] = input
+    # 入力画像を出力にも含める（トレーサビリティ）
+    result['input_image'] = input['image']
+    result['image_path'] = input['image_path']
+    result['frame_id'] = input.get('frame_id', 'unknown')
 
     return result
 ```
 
-**表示される場所**:
-- **Tracesタブ**: 各トレースの詳細で`image_url`フィールドにインライン画像表示
-- **Evalsタブ**: サンプル詳細で画像プレビュー
+**このアプローチのメリット**:
+- ✅ トレース一覧の**inputカラムに画像サムネイルが表示される**
+- ✅ 軽量（150px）なので読み込みが速い
+- ✅ フレームを視覚的に識別しやすい
+
+**画像の確認方法**:
+
+#### 1. トレース一覧での確認（推奨）
+
+1. **W&B Weave UIを開く**
+   ```
+   https://wandb.ai/<your-entity>/<your-project>/weave
+   ```
+
+2. **Tracesタブをクリック**
+
+3. **トレース一覧を確認**
+   - `surgical_vision_model_with_image`の各トレース行に画像サムネイルが表示されます
+   - **Inputカラム**に画像が表示されます
+   - フレームを視覚的に識別できます
+
+#### 2. 詳細ビューでの確認
+
+1. **トレース行をクリック**して詳細を開く
+
+2. **Inputセクション**を展開
+   - `image`: Data URI形式のサムネイル画像
+   - `image_path`: 元の画像ファイルパス
+   - `frame_id`: フレームID
+
+3. **Outputセクション**を展開
+   - `input_image`: 入力画像のコピー（トレーサビリティ用）
+   - `step`, `instruments`, `risk`, `description`: 解析結果
+
+**重要な注意事項**:
+- ✅ 画像サムネイルは**トレース一覧のInputカラム**に表示されます
+- ✅ 詳細ビューで画像の拡大表示も可能です
+- ✅ 画像は自動的に含まれます（追加設定不要）
+- ℹ️ Evaluationsタブのサマリーには画像は表示されません（仕様）
 
 **テストスクリプト**:
 ```bash
-# Data URI版（推奨）
-uv run python test_weave_images_correct.py
-```
+# 標準評価（画像自動含む）
+uv run python test_weave_evals.py
 
-**注意**: `wandb.Image`オブジェクトはWeave UIで正しくシリアライズされないため、Data URI形式を使用してください。
+# または
+./scripts/run_evaluation.sh
+```
 
 ---
 
