@@ -184,13 +184,14 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env" if (Path(__file__).parent
 
 
 @weave.op()
-async def surgical_vision_model_with_image(input: str) -> dict:
+async def surgical_vision_model_with_image(input: dict) -> dict:
     """Surgical vision model that returns analysis with inline image"""
     from app.vision import get_vision_analyzer
     analyzer = get_vision_analyzer()
-    result = analyzer.analyze_frame(input)
-    result['image_url'] = image_to_data_uri(input)
-    result['image_path'] = input
+    result = analyzer.analyze_frame(input['image_path'])
+    result['input_image'] = input['image']
+    result['image_path'] = input['image_path']
+    result['frame_id'] = input.get('frame_id', 'unknown')
     return result
 
 
@@ -245,12 +246,16 @@ async def main():
     sequence = loader.load_sequence(test_video, load_images=False)
 
     # Create evaluation dataset
+    # Approach 1: Dict input with embedded image for thumbnail display in trace list
     eval_dataset = []
     for i in range(min(FRAMES, len(sequence))):
         frame = sequence[i]
         eval_dataset.append({
-            "input": frame['image_path'],
-            "frame_id": frame['frame_id'],
+            "input": {
+                "image": image_to_data_uri(frame['image_path'], max_size=150),
+                "image_path": frame['image_path'],
+                "frame_id": frame['frame_id']
+            }
         })
 
     print(f"📊 Evaluation Dataset: {len(eval_dataset)} frames from {test_video}")

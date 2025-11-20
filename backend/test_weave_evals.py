@@ -24,22 +24,23 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 
 @weave.op()
-async def surgical_vision_model_with_image(input: str) -> dict:
+async def surgical_vision_model_with_image(input: dict) -> dict:
     """
     Surgical vision model that returns analysis with inline image
 
     Args:
-        input: Path to surgical frame image
+        input: Dictionary containing 'image', 'image_path', and 'frame_id'
 
     Returns:
-        Dictionary with analysis results AND image as Data URI
+        Dictionary with analysis results AND input image
     """
     analyzer = get_vision_analyzer()
-    result = analyzer.analyze_frame(input)
+    result = analyzer.analyze_frame(input['image_path'])
 
-    # Add image as Data URI for proper display
-    result['image_url'] = image_to_data_uri(input)
-    result['image_path'] = input
+    # Include the input image in the output for traceability
+    result['input_image'] = input['image']
+    result['image_path'] = input['image_path']
+    result['frame_id'] = input.get('frame_id', 'unknown')
 
     return result
 
@@ -126,12 +127,16 @@ async def main():
 
     # Create evaluation dataset
     # IMPORTANT: Use 'input' key for Weave Evaluations compatibility
+    # Approach 1: Dict input with embedded image for thumbnail display in trace list
     eval_dataset = []
     for i in range(min(3, len(sequence))):
         frame = sequence[i]
         eval_dataset.append({
-            "input": frame['image_path'],  # Weave expects 'input' key
-            "frame_id": frame['frame_id'],
+            "input": {
+                "image": image_to_data_uri(frame['image_path'], max_size=150),  # Small thumbnail for list view
+                "image_path": frame['image_path'],
+                "frame_id": frame['frame_id']
+            },
             # Optional: Add reference answers if you have ground truth
             # "reference_answer": {
             #     "step": "Dissection",
