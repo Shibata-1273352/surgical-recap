@@ -200,61 +200,158 @@ Rules:
 
 ## 3. データパイプライン
 
-### 3.1 動画処理フロー
+### 3.1 画像シーケンス処理フロー
 
 ```mermaid
 graph TD
-    A[手術動画アップロード] --> B[フレーム抽出]
-    B --> C[画像前処理]
-    C --> D[SambaNova API呼び出し]
-    D --> E[JSON構造化]
-    E --> F[Vector DB保存]
-    F --> G[タイムライン生成]
+    A[cholecSeg8kダウンロード] --> B[データセット読み込み]
+    B --> C[画像シーケンス整理]
+    C --> D[バッチ処理]
+    D --> E[SambaNova API呼び出し]
+    E --> F[JSON構造化]
+    F --> G[Ground Truth比較]
+    G --> H[精度評価]
+    H --> I[W&B Weaveにログ]
+    F --> J[タイムライン生成]
 
-    H[ガイドラインPDF] --> I[テキスト抽出]
-    I --> J[チャンク分割]
-    J --> K[埋め込み生成]
-    K --> L[ChromaDB保存]
+    K[ガイドラインPDF] --> L[テキスト抽出]
+    L --> M[チャンク分割]
+    M --> N[埋め込み生成]
+    N --> O[ChromaDB保存]
 
-    F --> M[検索インターフェース]
-    L --> M
-    M --> N[ユーザークエリ]
-    N --> O[vLLM推論]
-    O --> P[AI解説生成]
+    J --> P[検索インターフェース]
+    O --> P
+    P --> Q[ユーザークエリ]
+    Q --> R[vLLM推論]
+    R --> S[AI解説生成]
 ```
 
 ### 3.2 実装例
 
-#### フレーム抽出 (Backend)
+#### cholecSeg8kデータセット読み込み
 
 ```python
-import cv2
+import os
+import json
 from pathlib import Path
+from typing import Dict, List
+import cv2
 
-def extract_frames(video_path: str, fps: int = 1) -> list[Path]:
-    """動画から指定fpsでフレームを抽出"""
-    video = cv2.VideoCapture(video_path)
-    video_fps = video.get(cv2.CAP_PROP_FPS)
-    frame_interval = int(video_fps / fps)
+class CholecSeg8kLoader:
+    """cholecSeg8kデータセットのローダー"""
 
-    frames = []
-    frame_count = 0
+    def __init__(self, data_dir: str):
+        self.data_dir = Path(data_dir)
+        self.images_dir = self.data_dir / "images"
+        self.masks_dir = self.data_dir / "masks"
+        self.labels_path = self.data_dir / "labels.json"
 
-    while True:
-        success, frame = video.read()
-        if not success:
-            break
+    def load_sequence(self, sequence_id: str) -> List[Dict]:
+        """画像シーケンスとメタデータを読み込み"""
+        sequence = []
 
-        if frame_count % frame_interval == 0:
-            timestamp = frame_count / video_fps
-            frame_path = f"frames/frame_{timestamp:.2f}.jpg"
-            cv2.imwrite(frame_path, frame)
-            frames.append(Path(frame_path))
+        # ラベル情報の読み込み
+        with open(self.labels_path) as f:
+            labels = json.load(f)
 
-        frame_count += 1
+        # 画像ファイルを時系列順に取得
+        image_files = sorted(
+            self.images_dir.glob(f"{sequence_id}_*.png"),
+            key=lambda x: int(x.stem.split('_')[-1])
+        )
 
-    video.release()
-    return frames
+        for idx, img_path in enumerate(image_files):
+            frame_id = img_path.stem
+
+            # 画像読み込み
+            image = cv2.imread(str(img_path))
+
+            # セグメンテーションマスク読み込み
+            mask_path = self.masks_dir / f"{frame_id}_mask.png"
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) if mask_path.exists() else None
+
+            # ラベル情報取得
+            label_info = labels.get(frame_id, {})
+
+            sequence.append({
+                "frame_id": frame_id,
+                "frame_number": idx,
+                "timestamp": idx * 1.0,  # 仮想タイムスタンプ (1fps想定)
+                "image_path": str(img_path),
+                "image": image,
+                "mask": mask,
+                "ground_truth": {
+                    "phase": label_info.get("phase", "Unknown"),
+                    "instruments": label_info.get("instruments", []),
+                    "action": label_info.get("action", "Unknown")
+                }
+            })
+
+        return sequence
+
+    def get_all_sequences(self) -> List[str]:
+        """すべてのシーケンスIDを取得"""
+        # 画像ファイル名からシーケンスIDを抽出
+        sequence_ids = set()
+        for img_path in self.images_dir.glob("*.png"):
+            seq_id = img_path.stem.rsplit('_', 1)[0]
+            sequence_ids.add(seq_id)
+        return sorted(sequence_ids)
+```
+
+#### バッチ処理と並列化
+
+```python
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict
+
+async def process_frames_parallel(
+    frames: List[Dict],
+    batch_size: int = 10,
+    max_workers: int = 5
+) -> List[Dict]:
+    """フレームを並列処理"""
+
+    results = []
+
+    # バッチに分割
+    batches = [frames[i:i + batch_size] for i in range(0, len(frames), batch_size)]
+
+    # スレッドプールで並列処理
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+
+        for batch in batches:
+            future = executor.submit(process_batch, batch)
+            futures.append(future)
+
+        # 結果を収集
+        for future in futures:
+            batch_results = future.result()
+            results.extend(batch_results)
+
+    return results
+
+def process_batch(batch: List[Dict]) -> List[Dict]:
+    """バッチ処理（SambaNova API呼び出し）"""
+    results = []
+
+    for frame in batch:
+        result = analyze_surgical_frame(
+            frame['image_path'],
+            VISION_SYSTEM_PROMPT,
+            VISION_USER_PROMPT
+        )
+
+        # Ground Truthと比較
+        result['ground_truth'] = frame['ground_truth']
+        result['frame_id'] = frame['frame_id']
+        result['timestamp'] = frame['timestamp']
+
+        results.append(result)
+
+    return results
 ```
 
 #### SambaNova API呼び出し
@@ -665,19 +762,29 @@ if evaluation_result['total_score'] < 12:  # 20点満点中12点未満
 ### 5.1 Day 1: Core Pipeline構築
 
 #### 午前 (9:00-12:00)
-1. **環境セットアップ** (30分)
+1. **環境セットアップ** (45分)
    - SambaNova APIキー取得と疎通確認
+   - Kaggle APIセットアップ
+   - cholecSeg8kデータセットのダウンロード
    - vLLM環境構築（Colab or ローカル）
-   - Wandbプロジェクト作成
+   - W&B Weaveプロジェクト作成
 
-2. **Vision Pipeline実装** (2時間)
-   - フレーム抽出コード
+2. **データセット前処理** (45分)
+   - cholecSeg8kの構造確認
+   - 画像シーケンスの整理
+   - ラベル情報の読み込みとバリデーション
+   - サンプルデータの抽出（テスト用）
+
+3. **Vision Pipeline実装** (1.5時間)
+   - データローダーの実装（CholecSeg8kLoader）
+   - バッチ処理と並列化
    - SambaNova API連携
    - プロンプトチューニング
    - 出力JSON検証
 
-3. **動作確認** (30分)
-   - 1本の動画（5分）で全フロー確認
+4. **動作確認** (30分)
+   - 100フレームのサンプルで全フロー確認
+   - Ground Truthとの比較
    - 精度チェックとプロンプト調整
 
 #### 午後 (13:00-18:00)
@@ -701,9 +808,10 @@ if evaluation_result['total_score'] < 12:  # 20点満点中12点未満
 #### 午前 (9:00-12:00)
 1. **Frontend実装** (3時間)
    - Next.js環境構築
-   - Video Playerコンポーネント
-   - タイムライン表示
+   - 画像シーケンスビューアコンポーネント
+   - タイムライン表示（色分けバー）
    - 検索機能
+   - Ground Truth比較ビュー（サイドバイサイド表示）
 
 #### 午後 (13:00-15:00)
 1. **統合テスト** (1時間)
@@ -774,8 +882,9 @@ if evaluation_result['total_score'] < 12:  # 20点満点中12点未満
 | 問題 | 代替案 |
 |------|--------|
 | vLLMが動かない | OpenAI API (GPT-4o-mini) |
-| 手術動画が入手できない | YouTubeの料理動画で概念実証 |
-| SambaNovaが遅い | バッチサイズ削減、フレーム間引き |
+| cholecSeg8kダウンロードが遅い | サンプルデータ（100フレーム）のみで検証 |
+| SambaNovaのRate Limit | バッチサイズ削減、リトライロジック実装 |
+| セグメンテーションマスクのフォーマットが不明 | Ground Truth比較機能は後回し、Vision解析のみ実装 |
 
 ---
 
@@ -786,14 +895,15 @@ if evaluation_result['total_score'] < 12:  # 20点満点中12点未満
 1. **オープニング (30秒)**
    - 問題提起: 「外科医の技術継承危機」
 
-2. **デモ Part 1: 即時解析 (60秒)**
-   - 動画アップロード
-   - 「解析中...」→ 3分で完了（通常30分の作業）
-   - タイムライン表示
+2. **デモ Part 1: 高速解析 (60秒)**
+   - cholecSeg8kデータセット（1000フレーム）を読み込み
+   - 「解析中...」→ 10分で完了（SambaNovaの高速推論）
+   - タイムライン表示とGround Truth比較
 
 3. **デモ Part 2: インタラクティブ検索 (60秒)**
-   - 「結紮」で検索 → 該当シーンへジャンプ
+   - 「Clipping（結紮）」で検索 → 該当フレームへジャンプ
    - AI解説の表示
+   - セグメンテーションマスクのオーバーレイ表示
 
 4. **技術説明 (30秒)**
    - SambaNova + vLLMのハイブリッド構成
@@ -864,26 +974,32 @@ if evaluation_result['total_score'] < 12:  # 20点満点中12点未満
 
 ```bash
 # 1. リポジトリクローン
-git clone https://github.com/your-team/surgical-recap.git
+git clone https://github.com/Shibata-1273352/surgical-recap.git
 cd surgical-recap
 
-# 2. 環境変数設定
-cp .env.example .env
-# SAMBANOVA_API_KEY, WANDB_API_KEYを設定
+# 2. cholecSeg8kデータセットのダウンロード
+pip install kaggle
+kaggle datasets download -d newslab/cholecseg8k
+unzip cholecseg8k.zip -d data/cholecseg8k
 
-# 3. Backend起動
+# 3. 環境変数設定
+cp .env.example .env
+# SAMBANOVA_API_KEY, WANDB_API_KEY, AZURE_OPENAI_API_KEYを設定
+
+# 4. Backend起動
 cd backend
 uv sync
 uv run uvicorn app.main:app --reload --port 8000
 
-# 4. Frontend起動（別ターミナル）
+# 5. Frontend起動（別ターミナル）
 cd frontend
 npm install
 npm run dev
 
-# 5. ブラウザで確認
+# 6. ブラウザで確認
 # Backend: http://localhost:8000/docs
 # Frontend: http://localhost:3000
+# W&B Weave: https://wandb.ai/{team}/surgical-recap/weave
 ```
 
 **Good luck with your hackathon! 🚀**
