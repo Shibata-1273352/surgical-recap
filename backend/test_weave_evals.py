@@ -4,6 +4,7 @@ import os
 import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
+import weave
 from app.vision import get_vision_analyzer
 from app.dataset import get_dataset_loader
 from app.evaluation import (
@@ -40,6 +41,13 @@ async def main():
         print("⚠️  WANDB_API_KEY is not set - Weave tracking may not work")
 
     print("✓ All credentials configured")
+    print()
+
+    # Initialize Weave
+    entity = os.getenv("WANDB_ENTITY", "takasi-shibata")
+    project = os.getenv("WANDB_PROJECT", "surgical-recap")
+    weave.init(f"{entity}/{project}")
+    print("✓ Weave initialized")
     print()
 
     # Load dataset

@@ -99,12 +99,8 @@ class VisionEvaluator:
             azure_endpoint=self.endpoint
         )
 
-        # W&B Weave setup
-        project_name = wandb_project or os.getenv("WANDB_PROJECT", "surgical-recap")
-        entity_name = wandb_entity or os.getenv("WANDB_ENTITY", "default")
-
-        # Initialize Weave
-        weave.init(f"{entity_name}/{project_name}")
+        # Note: weave.init() should be called externally before creating evaluator
+        # to avoid multiple initialization issues
 
     @weave.op()
     def judge_vision_result(
