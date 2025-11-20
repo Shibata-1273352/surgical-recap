@@ -405,7 +405,8 @@ async def total_score_scorer(output: Dict) -> Dict:
 async def run_evaluation(
     dataset: List[Dict[str, Any]],
     model: SurgicalVisionModel,
-    scorers: Optional[List] = None
+    scorers: Optional[List] = None,
+    evaluation_name: Optional[str] = None
 ) -> Any:
     """
     Run W&B Weave Evaluation on surgical vision dataset
@@ -414,6 +415,7 @@ async def run_evaluation(
         dataset: List of examples with 'input' (image path) and optional 'reference_answer'
         model: SurgicalVisionModel instance to evaluate
         scorers: List of scorer functions (default: all scorers)
+        evaluation_name: Optional name for the evaluation (default: auto-generated with timestamp)
 
     Returns:
         Evaluation results
@@ -434,7 +436,7 @@ async def run_evaluation(
         model = SurgicalVisionModel(analyzer=analyzer)
 
         import asyncio
-        results = asyncio.run(run_evaluation(dataset, model))
+        results = asyncio.run(run_evaluation(dataset, model, evaluation_name="my-eval-v1"))
     """
     if scorers is None:
         scorers = [
@@ -445,9 +447,16 @@ async def run_evaluation(
             total_score_scorer
         ]
 
+    # Generate unique evaluation name if not provided
+    if evaluation_name is None:
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        evaluation_name = f"surgical-vision-eval-{timestamp}"
+
     evaluation = weave.Evaluation(
         dataset=dataset,
-        scorers=scorers
+        scorers=scorers,
+        name=evaluation_name
     )
 
     return await evaluation.evaluate(model)

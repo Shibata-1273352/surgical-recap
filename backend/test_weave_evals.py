@@ -92,6 +92,12 @@ async def main():
 
     # Run Weave Evaluation
     print("🚀 Running W&B Weave Evaluation...")
+
+    # Generate unique evaluation name with timestamp
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    eval_name = f"surgical-vision-eval-{timestamp}"
+    print(f"📝 Evaluation name: {eval_name}")
     print()
 
     try:
@@ -104,7 +110,8 @@ async def main():
                 clarity_scorer,
                 educational_value_scorer,
                 total_score_scorer
-            ]
+            ],
+            evaluation_name=eval_name
         )
 
         print("=" * 70)
