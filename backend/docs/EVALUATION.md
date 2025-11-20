@@ -285,6 +285,67 @@ asyncio.run(main())
 
 ---
 
+## 画像の可視化
+
+### W&B Weaveで画像を表示する
+
+評価結果とともに手術画像を表示することができます。
+
+#### 方法1: wandb.Imageを使用（推奨）
+
+```python
+import wandb
+from PIL import Image
+
+@weave.op()
+async def model_with_image(input: str) -> dict:
+    analyzer = get_vision_analyzer()
+    result = analyzer.analyze_frame(input)
+
+    # wandb.Imageを追加
+    with Image.open(input) as img:
+        img.thumbnail((600, 600))  # リサイズ（オプション）
+        result['image'] = wandb.Image(img)
+
+    return result
+```
+
+**表示される場所**:
+- **Tracesタブ**: 各トレースの詳細で`image`フィールドにサムネイル表示
+- **Evalsタブ**: サンプル詳細で画像プレビュー
+
+#### 方法2: Base64エンコード
+
+```python
+import base64
+import io
+from PIL import Image
+
+def image_to_base64(image_path: str) -> str:
+    with Image.open(image_path) as img:
+        img.thumbnail((400, 400))
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+@weave.op()
+async def model_with_base64(input: str) -> dict:
+    result = analyzer.analyze_frame(input)
+    result['image_base64'] = image_to_base64(input)
+    return result
+```
+
+**テストスクリプト**:
+```bash
+# wandb.Image版
+uv run python test_weave_with_wandb_images.py
+
+# Base64版
+uv run python test_weave_with_images.py
+```
+
+---
+
 ## カスタム評価の作成
 
 ### 独自のスコアラー関数を追加
