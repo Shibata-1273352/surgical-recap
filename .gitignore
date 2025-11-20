@@ -97,6 +97,11 @@ videos/
 !assets/**/*.jpeg
 !assets/**/*.png
 
+# Datasets
+backend/data/
+data/cholecseg8k/
+*.zip
+
 # Logs
 *.log
 logs/
