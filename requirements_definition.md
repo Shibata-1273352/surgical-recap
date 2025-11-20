@@ -229,25 +229,115 @@ def evaluate_rag_response(
         "timestamp": datetime.now().isoformat()
     }
 
-@weave.op()
-def batch_evaluate_responses(responses: list[dict]) -> dict:
-    """複数の回答を一括評価"""
-    results = []
-    for resp in responses:
-        eval_result = evaluate_rag_response(**resp)
-        results.append(eval_result)
+@weave.op
+def surgical_judge(action, explanation, context, reference_answer=None):
+    """Weave Evaluation用のJudge関数
 
-    # 集計統計
+    注: weave.Evaluationのscorersとして使用するため、
+    引数名は評価対象データのキーと一致させる必要がある
+    """
+
+    user_prompt = f"""【評価対象の解説】
+{explanation}
+
+【参考情報】
+手術シーン: {action}
+参照ガイドライン: {context}
+
+【専門医による模範解説】
+{reference_answer or "（参考解説なし）"}
+
+上記の解説を評価してください。
+"""
+
+    response = judge_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1
+    )
+
+    evaluation = json.loads(response.choices[0].message.content)
+
     return {
-        "results": results,
-        "average_scores": {
-            "medical_accuracy": np.mean([r["medical_accuracy"] for r in results]),
-            "guideline_compliance": np.mean([r["guideline_compliance"] for r in results]),
-            "clarity": np.mean([r["clarity"] for r in results]),
-            "educational_value": np.mean([r["educational_value"] for r in results])
-        },
-        "total_evaluated": len(results)
+        "medical_accuracy": evaluation["medical_accuracy"],
+        "guideline_compliance": evaluation["guideline_compliance"],
+        "clarity": evaluation["clarity"],
+        "educational_value": evaluation["educational_value"],
+        "total_score": sum([
+            evaluation["medical_accuracy"],
+            evaluation["guideline_compliance"],
+            evaluation["clarity"],
+            evaluation["educational_value"]
+        ]),
+        "feedback": evaluation.get("feedback", "")
     }
+
+# オフライン評価の実装（weave.Evaluation Framework）
+test_cases = [
+    {
+        "action_data": {
+            "timestamp": "00:12:05",
+            "step": "Clipping",
+            "instruments": ["Clip applier", "Grasper"],
+            "risk": "High"
+        },
+        "user_question": "この手技のポイントと注意点を教えてください",
+        "reference_answer": "クリップは管に対して垂直にかけることが推奨されます..."
+    },
+    {
+        "action_data": {
+            "timestamp": "00:08:30",
+            "step": "Dissection",
+            "instruments": ["Hook", "Grasper"],
+            "risk": "Medium"
+        },
+        "user_question": "剥離のコツは何ですか",
+        "reference_answer": "Calot三角の確実な同定が重要です..."
+    }
+]
+
+# Weaveデータセット作成
+dataset = weave.Dataset(rows=test_cases)
+
+# 評価対象の関数を定義
+@weave.op
+def evaluate_single_case(action_data, user_question, reference_answer=None):
+    """各テストケースを実行する関数
+
+    この関数がweave.Evaluationによって各行に対して呼び出される
+    """
+    # RAGエージェントで解説を生成
+    agent = SurgicalRAGAgent(vector_store=chroma_client)
+    result = agent.generate_explanation(action_data, user_question)
+
+    # Judgeに渡すためのフォーマット
+    return {
+        "action": action_data['step'],
+        "explanation": result['explanation'],
+        "context": result['context'],
+        "reference_answer": reference_answer
+    }
+
+# 評価実行
+evaluation = weave.Evaluation(
+    dataset=dataset,
+    scorers=[surgical_judge]  # Judge関数をリストで渡す
+)
+
+# 評価を実行（非同期）
+import asyncio
+results = await evaluation.evaluate(evaluate_single_case)
+
+# 結果の確認
+print(f"Average Medical Accuracy: {results['surgical_judge']['medical_accuracy']['mean']}")
+print(f"Average Guideline Compliance: {results['surgical_judge']['guideline_compliance']['mean']}")
+print(f"Average Clarity: {results['surgical_judge']['clarity']['mean']}")
+print(f"Average Educational Value: {results['surgical_judge']['educational_value']['mean']}")
+print(f"Average Total Score: {results['surgical_judge']['total_score']['mean']}")
 ```
 
 ### 7.4 評価フロー
@@ -287,8 +377,13 @@ WANDB_PROJECT=surgical-recap
 ```bash
 # Backend
 cd backend
-uv add weave azure-openai numpy
+uv add weave openai numpy python-dotenv
+
+# Weaveは自動的にW&Bの依存関係も含む
+# openaiパッケージはAzure OpenAI、SambaNova、vLLM（OpenAI互換）すべてで使用可能
 ```
+
+**注意**: `openai`パッケージ（バージョン1.0以降）は、Azure OpenAIもサポートしています。
 
 ---
 

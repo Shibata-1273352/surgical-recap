@@ -368,7 +368,7 @@ def generate_explanation(action_data: dict, user_question: str = None) -> str:
 
 ---
 
-## 4. 評価とモニタリング (Wandb)
+## 4. 評価とモニタリング (W&B Weave)
 
 ### 4.1 評価指標
 
@@ -382,82 +382,281 @@ def generate_explanation(action_data: dict, user_question: str = None) -> str:
 - **ガイドライン一致度**: 参照文献の適切性
 - **教育的価値**: 若手医師からのフィードバック
 
-### 4.2 Wandb実装
+### 4.2 W&B Weave実装
+
+Weaveは、LLMアプリケーション専用の評価・トレーシングツールです。`@weave.op`デコレータで関数を自動追跡し、入力・出力・コスト・レイテンシを記録します。
+
+#### 基本セットアップ
 
 ```python
-import wandb
+import weave
+from openai import AzureOpenAI
+import os
+import json
 
-# プロジェクト初期化
-wandb.init(
-    project="surgical-recap",
-    config={
-        "model_vision": "Llama-3.2-90B-Vision",
-        "model_text": "Llama-3.1-70B",
-        "inference_engine": "SambaNova + vLLM",
-        "dataset": "cholec80"
-    }
+# Weave初期化（チーム名/プロジェクト名）
+weave_client = weave.init('surgical-team/surgical-recap')
+
+# Azure OpenAI クライアント（Judge用）
+judge_client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version="2024-08-01-preview",
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
 )
+```
 
-def log_vision_inference(frame_path: str, result: dict, ground_truth: dict = None):
-    """Vision推論結果をログ"""
+#### Vision解析のトレーシング
 
-    log_data = {
-        "timestamp": result.get("timestamp"),
-        "predicted_action": result.get("step"),
-        "predicted_risk": result.get("risk"),
-        "instruments": result.get("instruments"),
-        "image": wandb.Image(frame_path)
-    }
+```python
+@weave.op
+def analyze_surgical_frame(image_path: str, system_prompt: str, user_prompt: str) -> dict:
+    """SambaNova経由でLlama 3.2 Visionを呼び出し"""
 
-    if ground_truth:
-        log_data["accuracy"] = int(result["step"] == ground_truth["step"])
-        log_data["true_action"] = ground_truth["step"]
+    with open(image_path, "rb") as img_file:
+        import base64
+        image_base64 = base64.b64encode(img_file.read()).decode()
 
-    wandb.log(log_data)
+    client = OpenAI(
+        api_key=os.environ.get("SAMBANOVA_API_KEY"),
+        base_url="https://api.sambanova.ai/v1"
+    )
 
-def log_rag_response(query: str, response: str, context: str, rating: int = None):
-    """RAG回答をログ"""
+    response = client.chat.completions.create(
+        model="Llama-3.2-90B-Vision-Instruct",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
+                    }
+                ]
+            }
+        ],
+        temperature=0.1,
+        max_tokens=500
+    )
 
-    wandb.log({
-        "query": query,
-        "response": response,
-        "retrieved_context": context,
-        "response_length": len(response),
-        "medical_accuracy_rating": rating,  # 1-5 (医師評価)
-    })
+    result = json.loads(response.choices[0].message.content)
 
-# LLM as a Judge
-def evaluate_response_quality(response: str, reference: str) -> dict:
-    """生成された解説を評価"""
+    # Weaveに自動記録される（入力・出力・コスト・レイテンシ）
+    return result
+```
 
-    judge_prompt = f"""以下の2つのテキストを比較し、医学的正確性と教育的価値を評価してください。
+#### RAG解説生成のトレーシング
 
-【AI生成の解説】
-{response}
+```python
+class SurgicalRAGAgent:
+    """手術解説を生成するRAGエージェント"""
 
-【参考（専門医の模範解説）】
-{reference}
+    def __init__(self, vector_store):
+        self.vector_store = vector_store
+        self.vllm_client = OpenAI(
+            api_key="EMPTY",
+            base_url=os.environ.get("VLLM_API_BASE", "http://localhost:8080/v1")
+        )
 
-評価項目（各1-5点）:
-1. 医学的正確性
-2. ガイドライン準拠度
-3. 説明の明確さ
-4. 教育的価値
+    @weave.op
+    def retrieve_context(self, action: str, top_k: int = 3) -> str:
+        """アクションに関連するガイドラインを検索"""
+        results = self.vector_store.query(
+            query_texts=[action],
+            n_results=top_k
+        )
+        return "\n\n".join(results['documents'][0])
 
-JSON形式で出力:
-{{"accuracy": 5, "guideline_compliance": 4, "clarity": 5, "educational_value": 4, "total": 18, "feedback": "具体的な改善提案"}}
+    @weave.op
+    def generate_explanation(self, action_data: dict, user_question: str = None) -> dict:
+        """vLLMでAI解説を生成"""
+
+        # コンテキスト取得（自動トレース）
+        context = self.retrieve_context(action_data['step'])
+
+        prompt = f"""【状況】
+手術: 腹腔鏡下胆嚢摘出術
+タイムスタンプ: {action_data['timestamp']}
+現在の手技: {action_data['step']}
+使用器具: {', '.join(action_data['instruments'])}
+リスクレベル: {action_data['risk']}
+
+【参考資料】
+{context}
+
+【質問】
+{user_question or 'この手技のポイントと注意点を教えてください。'}
 """
 
-    # 評価用LLM呼び出し
-    evaluation = call_judge_llm(judge_prompt)
+        response = self.vllm_client.chat.completions.create(
+            model="llama-3.1-70b-instruct",
+            messages=[
+                {"role": "system", "content": SURGICAL_INSTRUCTOR_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=800
+        )
 
-    wandb.log({
-        "evaluation": evaluation,
-        "response_being_evaluated": response
-    })
-
-    return evaluation
+        return {
+            "explanation": response.choices[0].message.content,
+            "context": context,
+            "action": action_data['step']
+        }
 ```
+
+#### LLM as a Judge実装
+
+```python
+# Judge用プロンプト
+JUDGE_SYSTEM_PROMPT = """
+あなたは経験豊富な外科指導医として、AIが生成した手術解説の品質を評価します。
+
+評価基準:
+1. 医学的正確性 (1-5点): 医学的事実の正確さ、専門用語の適切な使用
+2. ガイドライン準拠度 (1-5点): 標準ガイドラインとの整合性
+3. 説明の明確さ (1-5点): 論理的な構成、理解しやすさ
+4. 教育的価値 (1-5点): 若手医師への学習効果
+
+各項目を公平に評価し、改善提案も含めてJSON形式で出力してください。
+"""
+
+@weave.op
+def surgical_judge(action, explanation, context, reference_answer=None):
+    """RAG生成の解説を自動評価"""
+
+    user_prompt = f"""【評価対象の解説】
+{explanation}
+
+【参考情報】
+手術シーン: {action}
+参照ガイドライン: {context}
+
+【専門医による模範解説】
+{reference_answer or "（参考解説なし）"}
+
+上記の解説を評価してください。
+"""
+
+    response = judge_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1
+    )
+
+    evaluation = json.loads(response.choices[0].message.content)
+
+    # Weaveに自動記録（評価結果もトレース）
+    return {
+        "medical_accuracy": evaluation["medical_accuracy"],
+        "guideline_compliance": evaluation["guideline_compliance"],
+        "clarity": evaluation["clarity"],
+        "educational_value": evaluation["educational_value"],
+        "total_score": sum([
+            evaluation["medical_accuracy"],
+            evaluation["guideline_compliance"],
+            evaluation["clarity"],
+            evaluation["educational_value"]
+        ]),
+        "feedback": evaluation.get("feedback", "")
+    }
+```
+
+#### オフライン評価（Evaluation Framework）
+
+```python
+# テストデータセット作成
+test_cases = [
+    {
+        "action_data": {
+            "timestamp": "00:12:05",
+            "step": "Clipping",
+            "instruments": ["Clip applier", "Grasper"],
+            "risk": "High"
+        },
+        "user_question": "この手技のポイントと注意点を教えてください",
+        "reference_answer": "クリップは管に対して垂直にかけることが推奨されます..."
+    },
+    {
+        "action_data": {
+            "timestamp": "00:08:30",
+            "step": "Dissection",
+            "instruments": ["Hook", "Grasper"],
+            "risk": "Medium"
+        },
+        "user_question": "剥離のコツは何ですか",
+        "reference_answer": "Calot三角の確実な同定が重要です..."
+    }
+]
+
+# Weaveデータセット作成
+dataset = weave.Dataset(rows=test_cases)
+
+# 評価対象の関数を定義
+@weave.op
+def evaluate_single_case(action_data, user_question, reference_answer=None):
+    agent = SurgicalRAGAgent(vector_store=chroma_client)
+    result = agent.generate_explanation(action_data, user_question)
+    return result
+
+# 評価実行（非同期）
+evaluation = weave.Evaluation(
+    dataset=dataset,
+    scorers=[surgical_judge]
+)
+
+# 評価を実行
+import asyncio
+results = await evaluation.evaluate(evaluate_single_case)
+
+# 結果の確認
+print(f"Average Medical Accuracy: {results['surgical_judge']['medical_accuracy']['mean']}")
+print(f"Average Total Score: {results['surgical_judge']['total_score']['mean']}")
+```
+
+#### オンライン評価（本番トレーシング）
+
+```python
+# 本番環境でのリアルタイムトレーシング
+agent = SurgicalRAGAgent(vector_store=chroma_client)
+
+# ユーザーからのリクエスト
+user_action_data = {
+    "timestamp": "00:15:20",
+    "step": "Cutting",
+    "instruments": ["Scissors", "Grasper"],
+    "risk": "High"
+}
+
+# @weave.opで自動トレース（Weave UIで確認可能）
+result = agent.generate_explanation(
+    action_data=user_action_data,
+    user_question="胆嚢管の切離で注意すべき点は？"
+)
+
+# 非同期で評価を実行（本番パフォーマンスに影響しない）
+evaluation_result = surgical_judge(
+    action=user_action_data['step'],
+    explanation=result['explanation'],
+    context=result['context']
+)
+
+# スコアが低い場合はアラート
+if evaluation_result['total_score'] < 12:  # 20点満点中12点未満
+    print(f"⚠️ Low quality response detected: {evaluation_result['feedback']}")
+```
+
+#### Weave UIでの確認
+
+1. **トレースの確認**: https://wandb.ai/{team}/surgical-recap/weave
+2. **関数呼び出しの詳細**: 入力・出力・コスト・レイテンシが自動記録
+3. **評価結果の可視化**: スコアの時系列推移、失敗ケースの分析
+4. **プロンプトのバージョン管理**: システムプロンプトの変更履歴を追跡
 
 ---
 
