@@ -72,11 +72,12 @@ async def main():
     sequence = loader.load_sequence(test_video, load_images=False)
 
     # Create evaluation dataset
+    # IMPORTANT: Use 'input' key for Weave Evaluations compatibility
     eval_dataset = []
     for i in range(min(3, len(sequence))):
         frame = sequence[i]
         eval_dataset.append({
-            "image_path": frame['image_path'],
+            "input": frame['image_path'],  # Weave expects 'input' key
             "frame_id": frame['frame_id'],
             # Optional: Add reference answers if you have ground truth
             # "reference_answer": {
