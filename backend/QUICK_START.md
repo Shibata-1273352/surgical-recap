@@ -1,8 +1,31 @@
 # 📊 評価システム クイックスタート
 
-## 連続フレーム評価の方法
+## 🎯 用途別スクリプト選択
 
-### 方法1: test_weave_evals.py を使う
+### 画像サムネイル表示優先: test_continuous_frames.py ⭐
+
+**用途**: Vision解析のみ、トレース一覧で画像を視覚的に確認
+
+```bash
+# デフォルト（5フレーム、video01）
+uv run python test_continuous_frames.py
+
+# 10フレームを処理
+uv run python test_continuous_frames.py 10
+
+# video02の20フレームを処理
+uv run python test_continuous_frames.py 20 1
+```
+
+**特徴**:
+- ✅ **トレース一覧のInputカラムに画像サムネイル表示**
+- ✅ Vision解析結果（手技、器具、リスク、説明）
+- ❌ 評価メトリック（Judge）なし
+- ⚡ 高速（1秒/フレーム）
+
+### 品質評価優先: test_weave_evals.py
+
+**用途**: Azure OpenAI Judgeによる品質評価、スコアリング
 
 ```bash
 # デフォルト（3フレーム、video01）
@@ -14,18 +37,22 @@ uv run python test_weave_evals.py 5
 # 10フレームを評価
 uv run python test_weave_evals.py 10
 
-# 50フレームを評価
-uv run python test_weave_evals.py 50
-
 # video02の20フレームを評価
 uv run python test_weave_evals.py 20 1
 ```
 
+**特徴**:
+- ✅ 5つの評価メトリック（Medical Accuracy, Clarity, etc.）
+- ✅ Azure OpenAI Judgeによる品質スコア
+- ⚠️ トレース一覧では画像サムネイル非表示（Evaluationコンテキスト）
+- ✅ 個別のトレース詳細では画像確認可能
+- 🐢 低速（3-4秒/フレーム）、コスト高（$0.01/フレーム）
+
 **引数**:
-- 第1引数: フレーム数（デフォルト: 3）
+- 第1引数: フレーム数（デフォルト: 3または5）
 - 第2引数: ビデオインデックス（デフォルト: 0）
 
-### 方法2: run_evaluation.sh を使う（推奨）
+### 自動化スクリプト: run_evaluation.sh
 
 ```bash
 # デフォルト（3フレーム）
@@ -90,37 +117,50 @@ Azure OpenAI (Judge) の従量課金:
 
 ## 🎯 使用例
 
-### 少数フレームでテスト
+### シナリオ1: 画像を見ながらVision解析を確認
 
 ```bash
-# 開発・デバッグ時は2-3フレームで動作確認
-uv run python test_weave_evals.py 2
+# トレース一覧で画像サムネイル表示 ⭐
+uv run python test_continuous_frames.py 10
+
+# Tracesページで各フレームの画像とVision解析結果を確認
+# https://wandb.ai/takasi-shibata/surgical-recap/weave/traces
 ```
 
-### 中規模評価
+### シナリオ2: Vision解析の品質を評価
 
 ```bash
-# 10-20フレームで品質チェック
-./scripts/run_evaluation.sh --frames 10
+# 評価メトリック付きで少数フレームをテスト
+uv run python test_weave_evals.py 5
+
+# Evaluationsページで品質スコアを確認
+# https://wandb.ai/takasi-shibata/surgical-recap/weave
 ```
 
-### 大規模評価
+### シナリオ3: 開発・デバッグ
 
 ```bash
-# 50-100フレームで本格的な評価
+# 2フレームで高速動作確認（画像サムネイル表示）
+uv run python test_continuous_frames.py 2
+```
+
+### シナリオ4: 大規模評価
+
+```bash
+# 50-100フレームの品質評価（コストに注意）
 ./scripts/run_evaluation.sh --frames 50
 ```
 
-### 複数ビデオの評価
+### シナリオ5: 複数ビデオの解析
 
 ```bash
-# video01の10フレーム
-./scripts/run_evaluation.sh --frames 10 --video 0
+# video01の10フレーム（画像サムネイル）
+uv run python test_continuous_frames.py 10 0
 
-# video02の10フレーム
-./scripts/run_evaluation.sh --frames 10 --video 1
+# video02の10フレーム（画像サムネイル）
+uv run python test_continuous_frames.py 10 1
 
-# video03の10フレーム
+# video03の10フレーム（品質評価）
 ./scripts/run_evaluation.sh --frames 10 --video 2
 ```
 
@@ -131,13 +171,16 @@ uv run python test_weave_evals.py 2
 最初は少数のフレームでテストしてから、徐々に増やす：
 
 ```bash
-# Step 1: 動作確認（2フレーム）
-uv run python test_weave_evals.py 2
+# Step 1: 動作確認（2フレーム、画像サムネイル表示）
+uv run python test_continuous_frames.py 2
 
-# Step 2: 品質チェック（10フレーム）
+# Step 2: Vision解析の視覚的確認（10フレーム）
+uv run python test_continuous_frames.py 10
+
+# Step 3: 品質評価（5-10フレーム）
 uv run python test_weave_evals.py 10
 
-# Step 3: 本番評価（50フレーム以上）
+# Step 4: 本番評価（50フレーム以上）
 ./scripts/run_evaluation.sh --frames 50
 ```
 
