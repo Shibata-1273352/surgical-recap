@@ -183,6 +183,17 @@ from app.evaluation import (
 load_dotenv(dotenv_path=Path(__file__).parent / ".env" if (Path(__file__).parent / ".env").exists() else Path(__file__).parent.parent / ".env")
 
 
+@weave.op()
+async def surgical_vision_model_with_image(input: str) -> dict:
+    """Surgical vision model that returns analysis with inline image"""
+    from app.vision import get_vision_analyzer
+    analyzer = get_vision_analyzer()
+    result = analyzer.analyze_frame(input)
+    result['image_url'] = image_to_data_uri(input)
+    result['image_path'] = input
+    return result
+
+
 def image_to_data_uri(image_path: str, max_size: int = 600) -> str:
     """Convert image to Data URI for inline display"""
     with Image.open(image_path) as img:
@@ -247,15 +258,6 @@ async def main():
     print()
     print("🚀 Running evaluation...")
     print()
-
-    # Create custom model function with image support
-    @weave.op()
-    async def surgical_vision_model_with_image(input: str) -> dict:
-        """Surgical vision analysis model that includes image"""
-        result = analyzer.analyze_frame(input)
-        result['image_url'] = image_to_data_uri(input)
-        result['image_path'] = input
-        return result
 
     try:
         # Create evaluation with custom model function

@@ -23,6 +23,27 @@ from app.evaluation import (
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 
+@weave.op()
+async def surgical_vision_model_with_image(input: str) -> dict:
+    """
+    Surgical vision model that returns analysis with inline image
+
+    Args:
+        input: Path to surgical frame image
+
+    Returns:
+        Dictionary with analysis results AND image as Data URI
+    """
+    analyzer = get_vision_analyzer()
+    result = analyzer.analyze_frame(input)
+
+    # Add image as Data URI for proper display
+    result['image_url'] = image_to_data_uri(input)
+    result['image_path'] = input
+
+    return result
+
+
 def image_to_data_uri(image_path: str, max_size: int = 600) -> str:
     """
     Convert image to Data URI for inline display in browsers
@@ -121,18 +142,6 @@ async def main():
 
     print(f"📊 Evaluation Dataset: {len(eval_dataset)} frames from {test_video}")
     print("-" * 70)
-
-    # Create custom model function with image support
-    @weave.op()
-    async def surgical_vision_model_with_image(input: str) -> dict:
-        """Surgical vision analysis model that includes image"""
-        result = analyzer.analyze_frame(input)
-
-        # Add image as Data URI for proper display
-        result['image_url'] = image_to_data_uri(input)
-        result['image_path'] = input
-
-        return result
 
     # Run Weave Evaluation
     print("🚀 Running W&B Weave Evaluation...")
