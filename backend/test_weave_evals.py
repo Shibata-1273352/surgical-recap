@@ -5,6 +5,9 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 import weave
+import base64
+import io
+from PIL import Image
 from app.vision import get_vision_analyzer
 from app.dataset import get_dataset_loader
 from app.evaluation import (
@@ -18,6 +21,33 @@ from app.evaluation import (
 
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
+
+
+def image_to_data_uri(image_path: str, max_size: int = 600) -> str:
+    """
+    Convert image to Data URI for inline display in browsers
+
+    Args:
+        image_path: Path to image file
+        max_size: Maximum width/height for thumbnail
+
+    Returns:
+        Data URI string (data:image/png;base64,...)
+    """
+    with Image.open(image_path) as img:
+        # Resize to reduce payload size
+        img.thumbnail((max_size, max_size))
+
+        # Convert to PNG bytes
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        img_bytes = buffer.getvalue()
+
+        # Encode to base64
+        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+
+        # Return as Data URI
+        return f"data:image/png;base64,{img_base64}"
 
 
 async def main():
@@ -92,14 +122,26 @@ async def main():
     print(f"📊 Evaluation Dataset: {len(eval_dataset)} frames from {test_video}")
     print("-" * 70)
 
+    # Create custom model function with image support
+    @weave.op()
+    async def surgical_vision_model_with_image(input: str) -> dict:
+        """Surgical vision analysis model that includes image"""
+        result = analyzer.analyze_frame(input)
+
+        # Add image as Data URI for proper display
+        result['image_url'] = image_to_data_uri(input)
+        result['image_path'] = input
+
+        return result
+
     # Run Weave Evaluation
     print("🚀 Running W&B Weave Evaluation...")
     print()
 
     try:
-        results = await run_evaluation(
+        # Create evaluation with custom model function
+        evaluation = weave.Evaluation(
             dataset=eval_dataset,
-            analyzer=analyzer,
             scorers=[
                 medical_accuracy_scorer,
                 guideline_compliance_scorer,
@@ -108,6 +150,8 @@ async def main():
                 total_score_scorer
             ]
         )
+
+        results = await evaluation.evaluate(surgical_vision_model_with_image)
 
         print("=" * 70)
         print("✓ Weave Evaluation completed!")

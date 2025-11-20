@@ -27,8 +27,6 @@ NC='\033[0m' # No Color
 # Default values
 FRAMES=3
 VIDEO_INDEX=0
-WITH_IMAGES=false
-EVALUATION_SCRIPT="test_weave_evals.py"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -41,18 +39,12 @@ while [[ $# -gt 0 ]]; do
             VIDEO_INDEX="$2"
             shift 2
             ;;
-        -i|--with-images)
-            WITH_IMAGES=true
-            EVALUATION_SCRIPT="test_weave_images_correct.py"
-            shift
-            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  -f, --frames N       Number of frames to evaluate (default: 3)"
             echo "  -v, --video INDEX    Video index to use (default: 0)"
-            echo "  -i, --with-images    Include images in evaluation results"
             echo "  -h, --help           Show this help message"
             echo ""
             echo "Environment variables required:"
@@ -61,9 +53,12 @@ while [[ $# -gt 0 ]]; do
             echo "  AZURE_OPENAI_ENDPOINT   Azure OpenAI endpoint"
             echo "  WANDB_API_KEY           Weights & Biases API key"
             echo ""
+            echo "Note:"
+            echo "  Images are automatically included in evaluation results as Data URI"
+            echo ""
             echo "Example:"
             echo "  $0 --frames 5 --video 0"
-            echo "  $0 --frames 10 --with-images"
+            echo "  $0 --frames 10"
             exit 0
             ;;
         *)
@@ -143,8 +138,7 @@ echo ""
 echo -e "${YELLOW}[3/5] Evaluation settings:${NC}"
 echo -e "  Frames to evaluate: ${GREEN}$FRAMES${NC}"
 echo -e "  Video index: ${GREEN}$VIDEO_INDEX${NC}"
-echo -e "  Include images: ${GREEN}$WITH_IMAGES${NC}"
-echo -e "  Evaluation script: ${GREEN}$EVALUATION_SCRIPT${NC}"
+echo -e "  Images included: ${GREEN}Yes (Data URI format)${NC}"
 echo ""
 
 # Estimate time and cost
@@ -171,11 +165,13 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 import weave
+import base64
+import io
+from PIL import Image
 
 from app.vision import get_vision_analyzer
 from app.dataset import get_dataset_loader
 from app.evaluation import (
-    run_evaluation,
     medical_accuracy_scorer,
     guideline_compliance_scorer,
     clarity_scorer,
@@ -186,11 +182,21 @@ from app.evaluation import (
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent / ".env" if (Path(__file__).parent / ".env").exists() else Path(__file__).parent.parent / ".env")
 
+
+def image_to_data_uri(image_path: str, max_size: int = 600) -> str:
+    """Convert image to Data URI for inline display"""
+    with Image.open(image_path) as img:
+        img.thumbnail((max_size, max_size))
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        img_bytes = buffer.getvalue()
+        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+        return f"data:image/png;base64,{img_base64}"
+
 async def main():
     # Settings from shell script
     FRAMES = int(os.environ.get('EVAL_FRAMES', '3'))
     VIDEO_INDEX = int(os.environ.get('EVAL_VIDEO_INDEX', '0'))
-    WITH_IMAGES = os.environ.get('EVAL_WITH_IMAGES', 'false') == 'true'
 
     print("Surgical-Recap Evaluation")
     print("=" * 70)
@@ -242,10 +248,19 @@ async def main():
     print("🚀 Running evaluation...")
     print()
 
+    # Create custom model function with image support
+    @weave.op()
+    async def surgical_vision_model_with_image(input: str) -> dict:
+        """Surgical vision analysis model that includes image"""
+        result = analyzer.analyze_frame(input)
+        result['image_url'] = image_to_data_uri(input)
+        result['image_path'] = input
+        return result
+
     try:
-        results = await run_evaluation(
+        # Create evaluation with custom model function
+        evaluation = weave.Evaluation(
             dataset=eval_dataset,
-            analyzer=analyzer,
             scorers=[
                 medical_accuracy_scorer,
                 guideline_compliance_scorer,
@@ -254,6 +269,8 @@ async def main():
                 total_score_scorer
             ]
         )
+
+        results = await evaluation.evaluate(surgical_vision_model_with_image)
 
         print()
         print("=" * 70)
@@ -299,7 +316,6 @@ echo ""
 # Export settings as environment variables
 export EVAL_FRAMES=$FRAMES
 export EVAL_VIDEO_INDEX=$VIDEO_INDEX
-export EVAL_WITH_IMAGES=$WITH_IMAGES
 
 # Change to backend directory and run
 cd "$BACKEND_DIR" || exit 1
