@@ -3,8 +3,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
 
 app = FastAPI(
     title="Surgical-Recap API",
@@ -80,6 +85,151 @@ def dataset_info():
             "videos": video_details,
             "total_frames": total_frames
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Vision Analysis Endpoints
+# ============================================================
+
+# Pydantic Models
+class AnalyzeFrameRequest(BaseModel):
+    """Request model for single frame analysis"""
+    video_id: str
+    frame_id: str
+
+
+class AnalyzeSequenceRequest(BaseModel):
+    """Request model for sequence analysis"""
+    video_id: str
+    max_frames: Optional[int] = 10
+
+
+class VisionAnalysisResponse(BaseModel):
+    """Response model for vision analysis"""
+    step: str
+    instruments: List[str]
+    risk: str
+    description: str
+    frame_id: Optional[str] = None
+    image_path: Optional[str] = None
+
+
+@app.post("/api/vision/analyze-frame", response_model=VisionAnalysisResponse)
+def analyze_frame(request: AnalyzeFrameRequest):
+    """
+    Analyze a single surgical frame
+
+    Args:
+        request: AnalyzeFrameRequest with video_id and frame_id
+
+    Returns:
+        VisionAnalysisResponse with analysis results
+    """
+    from .dataset import get_dataset_loader
+    from .vision import get_vision_analyzer
+
+    # Get dataset loader
+    loader = get_dataset_loader()
+    if not loader:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Get vision analyzer
+    analyzer = get_vision_analyzer()
+    if not analyzer:
+        raise HTTPException(status_code=500, detail="Vision analyzer not available. Check SAMBANOVA_API_KEY")
+
+    try:
+        # Load sequence to find the specific frame
+        sequence = loader.load_sequence(request.video_id, load_images=False)
+
+        # Find the frame
+        frame = next((f for f in sequence if f['frame_id'] == request.frame_id), None)
+        if not frame:
+            raise HTTPException(status_code=404, detail=f"Frame {request.frame_id} not found in video {request.video_id}")
+
+        # Analyze frame
+        result = analyzer.analyze_frame(frame['image_path'])
+
+        # Check for errors
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+
+        # Add metadata
+        result['frame_id'] = request.frame_id
+        result['image_path'] = frame['image_path']
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/vision/analyze-sequence")
+def analyze_sequence(request: AnalyzeSequenceRequest):
+    """
+    Analyze a sequence of surgical frames
+
+    Args:
+        request: AnalyzeSequenceRequest with video_id and optional max_frames
+
+    Returns:
+        List of analysis results
+    """
+    from .dataset import get_dataset_loader
+    from .vision import get_vision_analyzer
+
+    # Get dataset loader
+    loader = get_dataset_loader()
+    if not loader:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Get vision analyzer
+    analyzer = get_vision_analyzer()
+    if not analyzer:
+        raise HTTPException(status_code=500, detail="Vision analyzer not available. Check SAMBANOVA_API_KEY")
+
+    try:
+        # Load sequence
+        sequence = loader.load_sequence(request.video_id, load_images=False)
+
+        if not sequence:
+            raise HTTPException(status_code=404, detail=f"No frames found for video {request.video_id}")
+
+        # Limit frames if specified
+        frames_to_analyze = sequence[:request.max_frames]
+
+        # Analyze each frame
+        results = []
+        for frame in frames_to_analyze:
+            try:
+                result = analyzer.analyze_frame(frame['image_path'])
+
+                # Add metadata
+                result['frame_id'] = frame['frame_id']
+                result['frame_number'] = frame['frame_number']
+                result['image_path'] = frame['image_path']
+
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    "error": str(e),
+                    "frame_id": frame['frame_id'],
+                    "image_path": frame['image_path']
+                })
+
+        return {
+            "status": "ok",
+            "video_id": request.video_id,
+            "total_frames_analyzed": len(results),
+            "results": results
+        }
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
