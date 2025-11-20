@@ -1,6 +1,7 @@
 """Test script for W&B Weave Evaluations"""
 
 import os
+import sys
 import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
@@ -73,7 +74,30 @@ def image_to_data_uri(image_path: str, max_size: int = 600) -> str:
 
 
 async def main():
+    # Parse command line arguments
+    num_frames = 3  # Default
+    video_index = 0  # Default
+
+    if len(sys.argv) > 1:
+        try:
+            num_frames = int(sys.argv[1])
+        except ValueError:
+            print("Usage: python test_weave_evals.py [num_frames] [video_index]")
+            print("  num_frames: Number of frames to evaluate (default: 3)")
+            print("  video_index: Video index to use (default: 0)")
+            sys.exit(1)
+
+    if len(sys.argv) > 2:
+        try:
+            video_index = int(sys.argv[2])
+        except ValueError:
+            print("Error: video_index must be an integer")
+            sys.exit(1)
+
     print("Testing W&B Weave Evaluations...")
+    print("=" * 70)
+    print(f"Frames to evaluate: {num_frames}")
+    print(f"Video index: {video_index}")
     print("=" * 70)
 
     # Check credentials
@@ -120,16 +144,28 @@ async def main():
     print("✓ Vision analyzer initialized")
     print()
 
-    # Prepare evaluation dataset (first 3 frames from video01)
+    # Prepare evaluation dataset
     videos = loader.get_all_videos()
-    test_video = videos[0]
+
+    if video_index >= len(videos):
+        print(f"❌ Video index {video_index} out of range (0-{len(videos)-1})")
+        return
+
+    test_video = videos[video_index]
     sequence = loader.load_sequence(test_video, load_images=False)
 
     # Create evaluation dataset
     # IMPORTANT: Use 'input' key for Weave Evaluations compatibility
     # Approach 1: Dict input with embedded image for thumbnail display in trace list
     eval_dataset = []
-    for i in range(min(3, len(sequence))):
+    frames_to_process = min(num_frames, len(sequence))
+
+    print(f"📊 Evaluation Dataset: {frames_to_process} frames from {test_video}")
+    if num_frames > len(sequence):
+        print(f"⚠️  Requested {num_frames} frames, but only {len(sequence)} available")
+    print("-" * 70)
+
+    for i in range(frames_to_process):
         frame = sequence[i]
         eval_dataset.append({
             "input": {
@@ -144,9 +180,6 @@ async def main():
             #     "risk": "Low"
             # }
         })
-
-    print(f"📊 Evaluation Dataset: {len(eval_dataset)} frames from {test_video}")
-    print("-" * 70)
 
     # Run Weave Evaluation
     print("🚀 Running W&B Weave Evaluation...")
@@ -184,7 +217,7 @@ async def main():
         print()
         print("   1. 上のリンクを開く")
         print("   2. フィルターで 'surgical_vision_model_with_image' を選択")
-        print("   3. 最新の3つのトレースのInputカラムに画像サムネイル表示")
+        print(f"   3. 最新の{frames_to_process}つのトレースのInputカラムに画像サムネイル表示")
         print()
         print("【方法2: Evaluationsページから】")
         print(f"   https://wandb.ai/{entity}/{project}/weave")
