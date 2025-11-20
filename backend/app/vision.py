@@ -6,6 +6,7 @@ import base64
 from pathlib import Path
 from typing import Dict, Optional, Union
 from sambanova import SambaNova
+import weave
 
 
 # System Prompt for Surgical Analysis
@@ -77,6 +78,7 @@ class VisionAnalyzer:
         with open(image_path, "rb") as img_file:
             return base64.b64encode(img_file.read()).decode("utf-8")
 
+    @weave.op()
     def analyze_frame(
         self,
         image_path: Union[str, Path],
@@ -148,6 +150,7 @@ class VisionAnalyzer:
                 "exception": str(e)
             }
 
+    @weave.op()
     def analyze_sequence(
         self,
         image_paths: list[Union[str, Path]],
