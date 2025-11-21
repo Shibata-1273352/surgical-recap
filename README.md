@@ -88,14 +88,37 @@ nano .env
 - `AZURE_OPENAI_API_KEY`: Azure OpenAI APIキー
 - `AZURE_OPENAI_ENDPOINT`: Azure OpenAIエンドポイント
 
-### 5. バックエンドの起動
+### 5. 開発環境の起動
 
+#### 🚀 一括起動（推奨）
+
+```bash
+# バックエンド + フロントエンドを一括起動
+./start.sh
+
+# 停止
+./stop.sh
+```
+
+アクセスURL:
+- フロントエンド: http://localhost:3000
+- チャット画面: http://localhost:3000/chat
+- バックエンドAPI: http://localhost:8000
+- APIドキュメント: http://localhost:8000/docs
+
+#### 個別起動
+
+**バックエンド:**
 ```bash
 cd backend
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-APIドキュメント: http://localhost:8000/docs
+**フロントエンド:**
+```bash
+cd frontend
+npm run dev
+```
 
 ## 📁 プロジェクト構造
 

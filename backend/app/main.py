@@ -17,6 +17,10 @@ from datetime import datetime
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
 
+# Import chat router
+from .chat import router as chat_router
+from .chat.endpoints import initialize_demo_sessions
+
 app = FastAPI(
     title="Surgical-Recap API",
     description="AI搭載型の手術動画即時分析・教育プラットフォーム",
@@ -43,11 +47,30 @@ CHATS_DIR.mkdir(parents=True, exist_ok=True)
 # CORS設定（Next.jsフロントエンドからのアクセスを許可）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
+    allow_origins=["*"],  # 開発環境では全てのオリジンを許可
+    allow_credentials=False,  # allow_origins="*"の場合はFalseにする必要がある
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 静的ファイル配信：動画ファイル
+upload_dir = Path(__file__).parent / "upload"
+if upload_dir.exists():
+    app.mount("/api/videos", StaticFiles(directory=str(upload_dir)), name="videos")
+
+# チャットルーターを登録
+app.include_router(chat_router)
+
+
+# 起動時イベント: デモセッションを初期化
+@app.on_event("startup")
+async def startup_event():
+    """アプリケーション起動時の初期化処理"""
+    try:
+        initialize_demo_sessions()
+        print("✅ Demo sessions initialized")
+    except Exception as e:
+        print(f"⚠️  Failed to initialize demo sessions: {e}")
 
 
 @app.get("/")
@@ -267,6 +290,22 @@ def analyze_sequence(request: AnalyzeSequenceRequest):
                     "file_path": selected_frame.file_path,
                     "timestamp": selected_frame.timestamp
                 })
+
+        # チャット機能用にセッションを登録
+        try:
+            from .chat.service import get_chat_service
+            from datetime import datetime
+            chat_service = get_chat_service()
+            if chat_service:
+                session_id = f"{request.video_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                chat_service.create_session_from_analysis(
+                    session_id=session_id,
+                    video_id=request.video_id,
+                    analysis_results=analysis_results
+                )
+        except Exception as e:
+            # チャット機能の登録失敗は無視（メイン機能に影響させない）
+            print(f"Warning: Failed to register chat session: {e}")
 
         return TwoStageFilterResponse(
             status="ok",
