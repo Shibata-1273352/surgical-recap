@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh aws-meta \"cd ~/iori/surgical-recap/backend && cp .env.example .env && cat .env\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

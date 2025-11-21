@@ -38,23 +38,20 @@ class DummyStage1Filter:
         sample_interval_sec: int = 10
     ) -> Manifest:
         """
-        ダミー実装: 10秒間隔でフレームをサンプリング
+        ダミー実装: 全フレームを通過させる
 
         Args:
             video_id: 動画ID
             frame_paths: フレーム画像のローカルパス
             job_id: ジョブID
             similarity_threshold: 類似度閾値（使用しない）
-            sample_interval_sec: サンプリング間隔（秒）
+            sample_interval_sec: サンプリング間隔（使用しない）
 
         Returns:
             Manifest: 選択されたフレームのメタデータ
         """
-        # 10秒間隔のフレーム数
-        frame_interval = int(sample_interval_sec * self.fps)
-
-        # 均等サンプリング
-        keep_indices = list(range(0, len(frame_paths), frame_interval))
+        # ダミー実装: 全フレームを通過
+        keep_indices = list(range(len(frame_paths)))
 
         # フレームメタデータ作成
         frames = []
