@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Surgical Recap – Video</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-container">
+      <header class="app-header">
+        <h1 id="video-page-title">Video</h1>
+        <a href="index.html" class="back-link">← Back to video list</a>
+      </header>
+
+      <section class="video-detail-section">
+        <div class="video-detail-left">
+          <video id="video-player" controls>
+            <source id="video-source" src="" type="video/mp4" />
+            Your browser does not support the video tag.
+          </video>
+        </div>
+
+        <div class="video-detail-right">
+          <h2>Comments</h2>
+          <div id="comments-list" class="comments-list"></div>
+
+          <form id="comment-form" class="comment-form">
+            <textarea
+              id="comment-input"
+              placeholder="Write a comment about this moment in the video…"
+              rows="3"
+            ></textarea>
+            <button type="submit">Post</button>
+          </form>
+        </div>
+      </section>
+
+           <!-- CHAT SECTION -->
+        <section class="chat-section">
+            <h2>Ask Llama about the video</h2>
+            <div id="chat-header" class="chat-header">
+                <div id="chat-tabs" class="chat-tabs"></div>
+                <button id="new-chat-btn" class="chat-new-btn">New chat</button>
+            </div>
+
+            <div id="chat-window" class="chat-window"></div>
+
+            <form id="chat-form" class="chat-form">
+                <input
+            type="text"
+            id="chat-input"
+            placeholder="Ask a question about the current step / tool / anatomy…"
+            autocomplete="off"
+            required
+            />
+            <button type="submit">Send</button>
+        </form>
+        </section>
+    </div>
+
+    <script src="./video.js"></script>
+  </body>
+</html>
