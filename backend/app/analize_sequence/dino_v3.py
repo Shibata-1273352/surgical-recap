@@ -1,14 +1,19 @@
 """
 DINOv3 Feature Extractor for Surgical-Recap
 
-This module provides DINOv3 feature extraction for surgical video analysis.
-It uses the unified DINO interface from the dinov3 repository.
+手術動画のフレーム解析用DINOv3特徴抽出モジュール。
+Tesla T4 (16GB)でのベンチマーク結果に基づき、解像度448を採用。
+
+Benchmark (2024-11-21):
+    Resolution 448 + Batch 64 = 63.9 fps, VRAM 1.18GB
 """
 
 import sys
 from pathlib import Path
-from typing import List, Dict, Optional, Union
+from typing import List, Optional, Union
+from concurrent.futures import ThreadPoolExecutor
 import torch
+import torchvision.transforms as transforms
 import numpy as np
 from PIL import Image
 
@@ -17,127 +22,158 @@ DINOV3_DIR = Path("/home/ubuntu/work/shibata/dinov3")
 if str(DINOV3_DIR) not in sys.path:
     sys.path.insert(0, str(DINOV3_DIR))
 
-from surgical_recap_integration import get_default_extractor
-from dino_extractor import DinoFeatureExtractor
+from transformers import AutoModel, AutoImageProcessor
+
+# Resolution config (based on benchmark 2024-11-21)
+# 224: ~296 fps, 384: ~92 fps, 448: ~64 fps, 518: ~45 fps
+DEFAULT_RESOLUTION = 448
+DEFAULT_BATCH_SIZE = 64
 
 
 class SurgicalDinoExtractor:
     """
     DINOv3 Feature Extractor for Surgical Video Analysis
-    
-    Features:
-    - Extracts high-quality visual features from surgical frames
-    - Supports both DINOv2 (development) and DINOv3 (production)
-    - Batch processing for efficiency
-    - Scene change detection
-    - Frame similarity computation
-    
+
+    手術フレームから高品質な視覚特徴を抽出。
+    バッチ処理による高速化、シーン変化検出をサポート。
+
     Example:
-        # Create extractor
-        extractor = SurgicalDinoExtractor(use_dinov3=True)
-        
-        # Extract features from a frame
+        extractor = SurgicalDinoExtractor()
         features = extractor.extract_features("frame.jpg")
-        
-        # Detect scene changes
         scene_changes = extractor.detect_scene_changes(frame_paths)
     """
-    
+
     def __init__(
         self,
-        use_dinov3: bool = True,
         device: Optional[str] = None,
+        resolution: int = DEFAULT_RESOLUTION,
     ):
         """
         Initialize the surgical DINO extractor.
-        
+
         Args:
-            use_dinov3: If True, use DINOv3 (recommended for production)
             device: Device to use (default: auto-detect CUDA)
+            resolution: Input image resolution (default: 448)
         """
-        self.use_dinov3 = use_dinov3
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        
+        self.resolution = resolution
+
         print(f"🔧 Initializing Surgical DINO Extractor...")
-        print(f"   Model: {'DINOv3' if use_dinov3 else 'DINOv2'}")
         print(f"   Device: {self.device}")
-        
-        # Get the appropriate extractor
-        if use_dinov3:
-            self.extractor = get_default_extractor(
-                use_dinov3=True,
-                hf_model_path=str(DINOV3_DIR / "models" / "dinov3-vits16")
-            )
-        else:
-            self.extractor = get_default_extractor(use_dinov3=False)
-        
-        info = self.extractor.get_info()
-        print(f"✓ Model loaded: {info['model_name']}")
-        print(f"  Feature dimension: {info['feature_dim']}")
-        print(f"  Parameters: {info['num_parameters'] / 1e6:.1f}M")
+        print(f"   Resolution: {self.resolution}")
+
+        # Load DINOv3 model from HuggingFace
+        model_path = str(DINOV3_DIR / "models" / "dinov3-vits16")
+        self.model = AutoModel.from_pretrained(model_path)
+        self.model = self.model.to(self.device).eval()
+        self.processor = AutoImageProcessor.from_pretrained(model_path)
+
+        # Custom transform for specified resolution
+        self.transform = transforms.Compose([
+            transforms.Resize(
+                int(self.resolution * 1.1),
+                interpolation=transforms.InterpolationMode.BICUBIC
+            ),
+            transforms.CenterCrop(self.resolution),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            ),
+        ])
+
+        print(f"✓ Model loaded on {self.device}")
+        print(f"  Feature dimension: {self.model.config.hidden_size}")
+        print(f"  Parameters: {sum(p.numel() for p in self.model.parameters()) / 1e6:.1f}M")
     
+    def _load_image(self, image: Union[str, Path, Image.Image]) -> Image.Image:
+        """Load image from path or return PIL Image."""
+        if isinstance(image, (str, Path)):
+            return Image.open(image).convert("RGB")
+        return image.convert("RGB") if image.mode != "RGB" else image
+
     def extract_features(
         self,
-        image: Union[str, Path, Image.Image, torch.Tensor],
+        image: Union[str, Path, Image.Image],
         normalize: bool = True,
     ) -> torch.Tensor:
         """
         Extract features from a single image.
-        
+
         Args:
-            image: Input image (path, PIL Image, or tensor)
+            image: Input image (path or PIL Image)
             normalize: If True, normalize features to unit length
-            
+
         Returns:
             Feature vector [1, 384]
         """
-        features = self.extractor(image)
-        
+        img = self._load_image(image)
+        tensor = self.transform(img).unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model(tensor)
+            features = outputs.last_hidden_state[:, 0]  # CLS token
+
         if normalize:
             features = features / features.norm(dim=-1, keepdim=True)
-        
+
         return features
-    
+
+    def _load_and_transform(self, image: Union[str, Path, Image.Image]) -> torch.Tensor:
+        """Load image and apply transform."""
+        return self.transform(self._load_image(image))
+
     def extract_features_batch(
         self,
         images: List[Union[str, Path, Image.Image]],
         normalize: bool = True,
-        batch_size: int = 32,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        num_workers: int = 4,
     ) -> torch.Tensor:
         """
         Extract features from multiple images in batches.
-        
+
         Args:
             images: List of images (paths or PIL Images)
             normalize: If True, normalize features to unit length
-            batch_size: Batch size for processing
-            
+            batch_size: Batch size for processing (default: 64)
+            num_workers: Number of threads for parallel image loading (default: 4)
+
         Returns:
             Feature matrix [N, 384]
         """
-        all_features = []
-        
-        for i in range(0, len(images), batch_size):
-            batch = images[i:i + batch_size]
-            
-            # Preprocess batch
-            if self.extractor._is_hf_model:
-                # HF model expects dict
-                batch_tensors = [self.extractor.preprocess(img)['pixel_values'] for img in batch]
-            else:
-                batch_tensors = [self.extractor.preprocess(img) for img in batch]
-            
-            batch_tensor = torch.cat(batch_tensors, dim=0)
-            
+        n_images = len(images)
+        feature_dim = self.model.config.hidden_size
+
+        # Pre-allocate output tensor on GPU
+        all_features = torch.empty(
+            (n_images, feature_dim),
+            dtype=torch.float32,
+            device=self.device
+        )
+
+        for i in range(0, n_images, batch_size):
+            batch_images = images[i:i + batch_size]
+            batch_end = min(i + batch_size, n_images)
+
+            # Parallel image loading and transform
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                tensors = list(executor.map(self._load_and_transform, batch_images))
+
+            batch_tensor = torch.stack(tensors).to(self.device)
+
             # Extract features
-            features = self.extractor.extract_features(batch_tensor)['cls_token']
-            
-            if normalize:
-                features = features / features.norm(dim=-1, keepdim=True)
-            
-            all_features.append(features)
-        
-        return torch.cat(all_features, dim=0)
+            with torch.no_grad():
+                outputs = self.model(batch_tensor)
+                features = outputs.last_hidden_state[:, 0]  # CLS token
+
+                if normalize:
+                    features = features / features.norm(dim=-1, keepdim=True)
+
+                # Write directly to pre-allocated tensor
+                all_features[i:batch_end] = features
+
+        return all_features.cpu()
     
     def compute_similarity(
         self,
@@ -281,8 +317,8 @@ def demo():
     print("Surgical-Recap DINOv3 Demo")
     print("=" * 80)
     
-    # Create extractor with DINOv3
-    extractor = SurgicalDinoExtractor(use_dinov3=True)
+    # Create extractor
+    extractor = SurgicalDinoExtractor()
     
     # Test with sample images
     sample_dir = Path("/home/ubuntu/work/shibata/dinov3/samples")
@@ -341,7 +377,7 @@ def demo():
     
     print("\n💡 Usage in your code:")
     print("   from app.analize_sequence.dino_v3 import SurgicalDinoExtractor")
-    print("   extractor = SurgicalDinoExtractor(use_dinov3=True)")
+    print("   extractor = SurgicalDinoExtractor()")
     print("   features = extractor.extract_features(frame_path)")
 
 
