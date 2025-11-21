@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import os
+import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -171,16 +172,22 @@ def analyze_frame(request: AnalyzeFrameRequest):
 @app.post("/api/vision/analyze-sequence")
 def analyze_sequence(request: AnalyzeSequenceRequest):
     """
-    Analyze a sequence of surgical frames
+    二段階フィルタリングでフレームを解析
+
+    Stage1: DINOv3視覚的類似度（現在はダミー）
+    Stage2: VLM意味的選択
 
     Args:
         request: AnalyzeSequenceRequest with video_id and optional max_frames
 
     Returns:
-        List of analysis results
+        TwoStageFilterResponse with manifest, final_manifest, and analysis results
     """
     from .dataset import get_dataset_loader
     from .vision import get_vision_analyzer
+    from .analize_sequence.pipeline import TwoStagePipeline
+    from .analize_sequence.models import TwoStageFilterResponse
+    from .vision import SURGICAL_VISION_SYSTEM_PROMPT, SURGICAL_VISION_USER_PROMPT
 
     # Get dataset loader
     loader = get_dataset_loader()
@@ -200,33 +207,55 @@ def analyze_sequence(request: AnalyzeSequenceRequest):
             raise HTTPException(status_code=404, detail=f"No frames found for video {request.video_id}")
 
         # Limit frames if specified
-        frames_to_analyze = sequence[:request.max_frames]
+        if request.max_frames:
+            sequence = sequence[:request.max_frames]
 
-        # Analyze each frame
-        results = []
-        for frame in frames_to_analyze:
+        # フレームパス抽出
+        frame_paths = [frame['image_path'] for frame in sequence]
+
+        # 二段階フィルタリングパイプライン
+        pipeline = TwoStagePipeline(
+            vision_analyzer=analyzer,
+            window_size=5,
+            overlap=2
+        )
+
+        job_id = f"job_{uuid.uuid4().hex[:8]}"
+        manifest, final_manifest = pipeline.process(
+            video_id=request.video_id,
+            frame_paths=frame_paths,
+            job_id=job_id
+        )
+
+        # 選択されたフレームのみ解析
+        analysis_results = []
+        for selected_frame in final_manifest.selected_frames:
             try:
-                result = analyzer.analyze_frame(frame['image_path'])
-
-                # Add metadata
-                result['frame_id'] = frame['frame_id']
-                result['frame_number'] = frame['frame_number']
-                result['image_path'] = frame['image_path']
-
-                results.append(result)
+                result = analyzer.analyze_frame(
+                    image_path=selected_frame.file_path,
+                    system_prompt=SURGICAL_VISION_SYSTEM_PROMPT,
+                    user_prompt=SURGICAL_VISION_USER_PROMPT
+                )
+                result['frame_id'] = f"frame_{selected_frame.global_index:06d}"
+                result['frame_number'] = selected_frame.global_index
+                result['file_path'] = selected_frame.file_path
+                analysis_results.append(result)
             except Exception as e:
-                results.append({
+                analysis_results.append({
                     "error": str(e),
-                    "frame_id": frame['frame_id'],
-                    "image_path": frame['image_path']
+                    "frame_id": f"frame_{selected_frame.global_index:06d}",
+                    "frame_number": selected_frame.global_index,
+                    "file_path": selected_frame.file_path
                 })
 
-        return {
-            "status": "ok",
-            "video_id": request.video_id,
-            "total_frames_analyzed": len(results),
-            "results": results
-        }
+        return TwoStageFilterResponse(
+            status="ok",
+            job_id=job_id,
+            video_id=request.video_id,
+            manifest=manifest,
+            final_manifest=final_manifest,
+            analysis_results=analysis_results
+        )
 
     except HTTPException:
         raise
