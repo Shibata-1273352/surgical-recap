@@ -4,7 +4,7 @@ import os
 import json
 import base64
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, List
 from sambanova import SambaNova
 import weave
 
@@ -151,37 +151,89 @@ class VisionAnalyzer:
             }
 
     @weave.op()
-    def analyze_sequence(
+    def select_keyframes_batch(
         self,
-        image_paths: list[Union[str, Path]],
-        batch_size: int = 1
-    ) -> list[Dict]:
+        image_paths: List[Union[str, Path]],
+        batch_id: int = 0
+    ) -> List[int]:
         """
-        Analyze a sequence of surgical frames
+        バッチからキーフレームを選択
 
         Args:
-            image_paths: List of image paths
-            batch_size: Number of images to process at once (default: 1)
+            image_paths: 画像パスのリスト (3-10枚)
+            batch_id: バッチID（プロンプト用）
 
         Returns:
-            List of analysis results
+            選択されたインデックスのリスト (0 ~ len(image_paths)-1)
         """
-        results = []
+        from .analize_sequence.prompts import (
+            SELECTOR_SYSTEM_PROMPT,
+            create_selector_user_prompt
+        )
 
-        for i, image_path in enumerate(image_paths):
-            try:
-                result = self.analyze_frame(image_path)
-                result["frame_index"] = i
-                result["image_path"] = str(image_path)
-                results.append(result)
-            except Exception as e:
-                results.append({
-                    "frame_index": i,
-                    "image_path": str(image_path),
-                    "error": str(e)
-                })
+        # 画像をbase64エンコード
+        image_contents = []
+        for img_path in image_paths:
+            img_b64 = self.encode_image(img_path)
+            image_contents.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+            })
 
-        return results
+        # プロンプト構築
+        user_prompt = create_selector_user_prompt(
+            frame_count=len(image_paths),
+            batch_id=batch_id
+        )
+
+        # メッセージ構築
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"{SELECTOR_SYSTEM_PROMPT}\n\n{user_prompt}"},
+                    *image_contents
+                ]
+            }
+        ]
+
+        # API呼び出し
+        response = self.client.chat.completions.create(
+            model="Llama-4-Maverick-17B-128E-Instruct",
+            messages=messages,
+            temperature=0.1,
+            top_p=0.1
+        )
+
+        # JSON解析
+        try:
+            content = response.choices[0].message.content
+
+            # Remove markdown code blocks if present
+            if content.startswith("```json"):
+                content = content.replace("```json", "").replace("```", "").strip()
+            elif content.startswith("```"):
+                content = content.replace("```", "").strip()
+
+            result = json.loads(content)
+            selected_indices = result.get("selected_indices", [])
+
+            # バリデーション
+            valid_indices = [
+                idx for idx in selected_indices
+                if isinstance(idx, int) and 0 <= idx < len(image_paths)
+            ]
+
+            if not valid_indices:
+                # フォールバック: 中央とエンド
+                valid_indices = [0, len(image_paths) // 2]
+
+            return valid_indices
+
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: JSON parse error in batch {batch_id}: {e}")
+            # フォールバック: 最初と中央
+            return [0, len(image_paths) // 2]
 
 
 def get_vision_analyzer() -> Optional[VisionAnalyzer]:
