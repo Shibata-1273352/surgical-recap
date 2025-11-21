@@ -1,11 +1,10 @@
 """Surgical-Recap Backend API"""
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import os
-import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -257,6 +256,91 @@ def analyze_sequence(request: AnalyzeSequenceRequest):
 
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/video/upload")
+async def upload_video(video: UploadFile = File(...)):
+    """
+    動画をアップロードして解析
+
+    1. フレーム抽出
+    2. 二段階フィルタリング（Stage1 + Stage2）
+    3. 選択フレームのVision解析
+
+    Returns:
+        TwoStageFilterResponse with manifest, final_manifest, and analysis results
+    """
+    import cv2
+    from .vision import get_vision_analyzer
+    from .analize_sequence.pipeline import TwoStagePipeline
+
+    # Get vision analyzer
+    analyzer = get_vision_analyzer()
+    if not analyzer:
+        raise HTTPException(status_code=500, detail="Vision analyzer not available. Check SAMBANOVA_API_KEY")
+
+    # 一時ディレクトリ作成
+    import tempfile
+    temp_dir = Path(tempfile.mkdtemp())
+
+    # 動画ファイルを保存
+    video_path = temp_dir / video.filename
+    with open(video_path, "wb") as f:
+        content = await video.read()
+        f.write(content)
+
+    # フレーム抽出
+    frames_dir = temp_dir / "frames"
+    frames_dir.mkdir(exist_ok=True)
+
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    frame_paths = []
+    frame_idx = 0
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_path = frames_dir / f"frame_{frame_idx:06d}.jpg"
+        cv2.imwrite(str(frame_path), frame)
+        frame_paths.append(str(frame_path))
+        frame_idx += 1
+
+    cap.release()
+
+    if not frame_paths:
+        raise HTTPException(status_code=400, detail="No frames extracted from video")
+
+    try:
+        # 二段階フィルタリングパイプライン
+        pipeline = TwoStagePipeline(
+            vision_analyzer=analyzer,
+            window_size=5,
+            overlap=2
+        )
+
+        manifest, final_manifest = pipeline.process(
+            video_id=video.filename,
+            frame_paths=frame_paths
+        )
+
+        # フレーム解析パイプライン
+        from .frame_analysis import FrameAnalysisPipeline
+        frame_analysis_pipeline = FrameAnalysisPipeline(vision_analyzer=analyzer)
+        analysis_results = frame_analysis_pipeline.analyze(final_manifest)
+
+        return {
+            "status": "ok",
+            "video_id": video.filename,
+            "total_frames": len(frame_paths),
+            "selected_frames": len(final_manifest.selected_frames),
+            "analysis_results": analysis_results
+        }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
