@@ -11,7 +11,7 @@ import json
 import weave
 
 from .protocols import Stage1FilterProtocol
-from .stage1_dummy import DummyStage1Filter
+from .stage1_dino import DINOv3Stage1Filter
 from .stage2_vlm import VLMStage2Filter
 from .models import Manifest, FinalManifest
 
@@ -40,7 +40,7 @@ class TwoStagePipeline:
             jobs_dir: ジョブ出力ディレクトリ（指定しない場合は backend/jobs）
         """
         self.vision_analyzer = vision_analyzer
-        self.stage1_filter = stage1_filter or DummyStage1Filter()
+        self.stage1_filter = stage1_filter or DINOv3Stage1Filter()
         self.stage2_filter = VLMStage2Filter(
             vision_analyzer=vision_analyzer,
             window_size=window_size,
