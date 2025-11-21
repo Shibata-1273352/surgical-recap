@@ -157,11 +157,8 @@ class VLMStage2Filter:
         for batch_id, local_idx, global_idx in unique_selections:
             frame = frames[global_idx]
             selected_frames.append(SelectedFrame(
-                global_index=frame.frame_number,
-                stage1_index=global_idx,
                 file_path=frame.file_path,
-                batch_id=batch_id,
-                local_index_in_batch=local_idx
+                timestamp=frame.timestamp
             ))
 
         return FinalManifest(

@@ -236,16 +236,14 @@ def analyze_sequence(request: AnalyzeSequenceRequest):
                     system_prompt=SURGICAL_VISION_SYSTEM_PROMPT,
                     user_prompt=SURGICAL_VISION_USER_PROMPT
                 )
-                result['frame_id'] = f"frame_{selected_frame.global_index:06d}"
-                result['frame_number'] = selected_frame.global_index
                 result['file_path'] = selected_frame.file_path
+                result['timestamp'] = selected_frame.timestamp
                 analysis_results.append(result)
             except Exception as e:
                 analysis_results.append({
                     "error": str(e),
-                    "frame_id": f"frame_{selected_frame.global_index:06d}",
-                    "frame_number": selected_frame.global_index,
-                    "file_path": selected_frame.file_path
+                    "file_path": selected_frame.file_path,
+                    "timestamp": selected_frame.timestamp
                 })
 
         return TwoStageFilterResponse(

@@ -26,11 +26,8 @@ class Manifest(BaseModel):
 
 class SelectedFrame(BaseModel):
     """Stage2で選択されたフレーム"""
-    global_index: int  # 元の動画でのフレーム番号
-    stage1_index: int  # Stage1のkeep_indices内でのインデックス
     file_path: str  # ローカルファイルパス
-    batch_id: int
-    local_index_in_batch: int  # バッチ内のインデックス (0-4)
+    timestamp: float  # タイムスタンプ（秒）
 
 
 class FinalManifest(BaseModel):

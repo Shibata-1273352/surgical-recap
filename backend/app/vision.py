@@ -150,6 +150,38 @@ class VisionAnalyzer:
                 "exception": str(e)
             }
 
+    def encode_image_resized(
+        self,
+        image_path: Union[str, Path],
+        max_size: tuple = (512, 512),
+        quality: int = 85
+    ) -> str:
+        """
+        画像をリサイズしてbase64エンコード
+
+        Args:
+            image_path: 画像パス
+            max_size: 最大サイズ (width, height)
+            quality: JPEG品質
+
+        Returns:
+            Base64エンコードされた文字列
+        """
+        import cv2
+
+        img = cv2.imread(str(image_path))
+        h, w = img.shape[:2]
+
+        # アスペクト比を維持してリサイズ
+        scale = min(max_size[0] / w, max_size[1] / h)
+        if scale < 1:
+            new_w, new_h = int(w * scale), int(h * scale)
+            img = cv2.resize(img, (new_w, new_h))
+
+        # JPEGエンコード
+        _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        return base64.b64encode(buffer).decode()
+
     @weave.op()
     def select_keyframes_batch(
         self,
@@ -171,10 +203,10 @@ class VisionAnalyzer:
             create_selector_user_prompt
         )
 
-        # 画像をbase64エンコード
+        # 画像をリサイズしてbase64エンコード
         image_contents = []
         for img_path in image_paths:
-            img_b64 = self.encode_image(img_path)
+            img_b64 = self.encode_image_resized(img_path)
             image_contents.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
