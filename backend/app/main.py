@@ -17,10 +17,6 @@ from datetime import datetime
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
 
-# Import chat router
-from .chat import router as chat_router
-from .chat.endpoints import initialize_demo_sessions
-
 app = FastAPI(
     title="Surgical-Recap API",
     description="AI搭載型の手術動画即時分析・教育プラットフォーム",
