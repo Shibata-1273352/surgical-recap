@@ -321,18 +321,10 @@ async def upload_video(video: UploadFile = File(...)):
         )
         analysis_results = frame_analysis_pipeline.analyze(final_manifest)
 
-        return {
-            "status": "ok",
-            "video_id": video_id,
-            "video_path": str(video_path),
-            "uploads_dir": str(uploads_dir),
-            "total_frames": len(frame_paths),
-            "selected_frames": len(final_manifest.selected_frames),
-            "analysis_results": analysis_results
-        }
+        return {"status": "success"}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "failed", "error": str(e)}
 
 
 if __name__ == "__main__":
