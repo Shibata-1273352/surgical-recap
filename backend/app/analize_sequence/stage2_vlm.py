@@ -6,9 +6,11 @@ Sliding windowでフレームをバッチ処理し、
 """
 
 from typing import List, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import weave
 
 from .models import Manifest, FinalManifest, SelectedFrame, FrameMetadata
+from .config import STAGE2_WINDOW_SIZE, STAGE2_OVERLAP, STAGE2_MAX_WORKERS
 
 
 class VLMStage2Filter:
@@ -22,14 +24,14 @@ class VLMStage2Filter:
     def __init__(
         self,
         vision_analyzer,
-        window_size: int = 5,
-        overlap: int = 2
+        window_size: int = STAGE2_WINDOW_SIZE,
+        overlap: int = STAGE2_OVERLAP
     ):
         """
         Args:
             vision_analyzer: VisionAnalyzerインスタンス
-            window_size: スライディングウィンドウサイズ
-            overlap: オーバーラップフレーム数
+            window_size: スライディングウィンドウサイズ（デフォルト: config.STAGE2_WINDOW_SIZE）
+            overlap: オーバーラップフレーム数（デフォルト: config.STAGE2_OVERLAP）
         """
         self.vision_analyzer = vision_analyzer
         self.window_size = window_size
@@ -68,14 +70,14 @@ class VLMStage2Filter:
         local_index: int
     ) -> int:
         """
-        バッチ内のローカルインデックスをグローバルインデックスに変換
+        バッチ内のローカルインデックスをframes配列内のインデックスに変換
 
         Args:
             batch_id: バッチID
             local_index: バッチ内インデックス (0-4)
 
         Returns:
-            グローバルインデックス (Stage1 keep_indices内)
+            frames配列内のインデックス
         """
         return batch_id * self.step_size + local_index
 
@@ -103,13 +105,53 @@ class VLMStage2Filter:
 
         return sorted(unique, key=lambda x: x[2])  # global_indexでソート
 
+    def _process_single_batch(
+        self,
+        batch_id: int,
+        window_frames: List[FrameMetadata],
+        n_frames: int
+    ) -> List[Tuple[int, int, int]]:
+        """
+        単一バッチを処理（並列実行用）
+
+        Args:
+            batch_id: バッチID
+            window_frames: バッチ内のフレーム
+            n_frames: 全フレーム数
+
+        Returns:
+            [(batch_id, local_idx, global_idx), ...]
+        """
+        image_paths = [f.file_path for f in window_frames]
+        selections = []
+
+        try:
+            selected_indices = self.vision_analyzer.select_keyframes_batch(
+                image_paths=image_paths,
+                batch_id=batch_id
+            )
+
+            for local_idx in selected_indices:
+                global_idx = self._batch_local_to_global_index(batch_id, local_idx)
+                if global_idx < n_frames:
+                    selections.append((batch_id, local_idx, global_idx))
+
+        except Exception as e:
+            print(f"Warning: Batch {batch_id} failed: {e}. Using center frame.")
+            center_idx = len(window_frames) // 2
+            global_idx = self._batch_local_to_global_index(batch_id, center_idx)
+            if global_idx < n_frames:
+                selections.append((batch_id, center_idx, global_idx))
+
+        return selections
+
     @weave.op()
     def filter_frames(
         self,
         manifest: Manifest
     ) -> FinalManifest:
         """
-        Stage1の結果から医学的に重要なフレームを選択
+        Stage1の結果から医学的に重要なフレームを選択（並列処理）
 
         Args:
             manifest: Stage1のManifest
@@ -123,31 +165,25 @@ class VLMStage2Filter:
         # スライディングウィンドウ生成
         windows = self._generate_sliding_windows(frames, self.window_size)
 
-        # 各バッチを処理
-        for batch_id, window_frames in windows:
-            image_paths = [f.file_path for f in window_frames]
+        # 並列でバッチ処理
+        with ThreadPoolExecutor(max_workers=STAGE2_MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(
+                    self._process_single_batch,
+                    batch_id,
+                    window_frames,
+                    len(frames)
+                ): batch_id
+                for batch_id, window_frames in windows
+            }
 
-            # VLMで選択
-            try:
-                selected_indices = self.vision_analyzer.select_keyframes_batch(
-                    image_paths=image_paths,
-                    batch_id=batch_id
-                )
-
-                # グローバルインデックスに変換
-                for local_idx in selected_indices:
-                    global_idx = self._batch_local_to_global_index(batch_id, local_idx)
-                    # global_idxがframes配列の範囲内かチェック
-                    if global_idx < len(frames):
-                        all_selections.append((batch_id, local_idx, global_idx))
-
-            except Exception as e:
-                # エラー時はバッチの中央フレームを選択
-                print(f"Warning: Batch {batch_id} failed: {e}. Using center frame.")
-                center_idx = len(window_frames) // 2
-                global_idx = self._batch_local_to_global_index(batch_id, center_idx)
-                if global_idx < len(frames):
-                    all_selections.append((batch_id, center_idx, global_idx))
+            for future in as_completed(futures):
+                batch_id = futures[future]
+                try:
+                    selections = future.result()
+                    all_selections.extend(selections)
+                except Exception as e:
+                    print(f"Warning: Batch {batch_id} future failed: {e}")
 
         # 重複除去
         unique_selections = self._deduplicate_selections(all_selections)

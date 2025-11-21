@@ -16,6 +16,12 @@ import weave
 from .models import Manifest, FrameMetadata
 from .protocols import Stage1FilterProtocol
 from .dino_v3 import SurgicalDinoExtractor
+from .config import (
+    STAGE1_FPS,
+    STAGE1_BATCH_SIZE,
+    STAGE1_SIMILARITY_THRESHOLD,
+    STAGE1_SAMPLE_INTERVAL_SEC,
+)
 
 
 def compute_adjacent_similarities(features: torch.Tensor) -> np.ndarray:
@@ -55,19 +61,20 @@ def group_by_similarity(
         threshold: 類似度閾値
 
     Returns:
-        groups: (start_idx, end_idx) のリスト
+        groups: (start_idx, end_idx) のリスト（end_idxは含む）
     """
+    n_frames = len(similarities) + 1  # フレーム数 = 類似度数 + 1
     groups = []
     start_idx = 0
 
     for i, sim in enumerate(similarities):
         if sim < threshold:
-            # シーン変化検出 → グループ終了
+            # シーン変化検出 → グループ終了（iまでが前グループ）
             groups.append((start_idx, i))
             start_idx = i + 1
 
-    # 最後のグループを追加
-    groups.append((start_idx, len(similarities)))
+    # 最後のグループを追加（最終フレームまで含む）
+    groups.append((start_idx, n_frames - 1))
 
     return groups
 
@@ -81,7 +88,7 @@ def sample_keyframes_from_groups(
     各グループからキーフレームをサンプリング
 
     Args:
-        groups: (start_idx, end_idx) のリスト
+        groups: (start_idx, end_idx) のリスト（end_idxは含む）
         total_frames: 総フレーム数
         sample_interval: グループ内サンプリング間隔（フレーム数）
 
@@ -91,17 +98,16 @@ def sample_keyframes_from_groups(
     keep_indices = []
 
     for start_idx, end_idx in groups:
-        group_length = end_idx - start_idx + 1
+        group_length = end_idx - start_idx + 1  # end_idx含むので+1
 
         if group_length <= sample_interval:
             # 短いグループは中央のフレームを選択
             mid = (start_idx + end_idx) // 2
             keep_indices.append(mid)
         else:
-            # 長いグループは等間隔でサンプリング
+            # 長いグループは等間隔でサンプリング（end_idx含む）
             for i in range(start_idx, end_idx + 1, sample_interval):
-                if i < total_frames:
-                    keep_indices.append(i)
+                keep_indices.append(i)
 
     # 重複削除してソート
     keep_indices = sorted(set(keep_indices))
@@ -121,13 +127,13 @@ class DINOv3Stage1Filter:
 
     def __init__(
         self,
-        fps: float = 1.0,
-        batch_size: int = 32
+        fps: float = STAGE1_FPS,
+        batch_size: int = STAGE1_BATCH_SIZE
     ):
         """
         Args:
-            fps: 動画のフレームレート（cholecSeg8kは1fps想定）
-            batch_size: 特徴量抽出時のバッチサイズ
+            fps: 動画のフレームレート（デフォルト: config.STAGE1_FPS）
+            batch_size: 特徴量抽出時のバッチサイズ（デフォルト: config.STAGE1_BATCH_SIZE）
         """
         self.fps = fps
         self.batch_size = batch_size
@@ -139,8 +145,8 @@ class DINOv3Stage1Filter:
         video_id: str,
         frame_paths: List[str],
         job_id: str,
-        similarity_threshold: float = 0.98,
-        sample_interval_sec: int = 10
+        similarity_threshold: float = STAGE1_SIMILARITY_THRESHOLD,
+        sample_interval_sec: int = STAGE1_SAMPLE_INTERVAL_SEC
     ) -> Manifest:
         """
         DINOv3特徴量に基づいてフレームをフィルタリング
@@ -149,8 +155,8 @@ class DINOv3Stage1Filter:
             video_id: 動画ID
             frame_paths: フレーム画像のローカルパス
             job_id: ジョブID
-            similarity_threshold: 類似度閾値（0.98推奨）
-            sample_interval_sec: グループ内サンプリング間隔（秒）
+            similarity_threshold: 類似度閾値（デフォルト: config.STAGE1_SIMILARITY_THRESHOLD）
+            sample_interval_sec: グループ内サンプリング間隔（デフォルト: config.STAGE1_SAMPLE_INTERVAL_SEC）
 
         Returns:
             Manifest: 選択されたフレームのメタデータ
