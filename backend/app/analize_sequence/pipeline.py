@@ -14,6 +14,7 @@ from .protocols import Stage1FilterProtocol
 from .stage1_dino import DINOv3Stage1Filter
 from .stage2_vlm import VLMStage2Filter
 from .models import Manifest, FinalManifest
+from .config import STAGE2_WINDOW_SIZE, STAGE2_OVERLAP
 
 
 class TwoStagePipeline:
@@ -27,16 +28,16 @@ class TwoStagePipeline:
         self,
         vision_analyzer,
         stage1_filter: Optional[Stage1FilterProtocol] = None,
-        window_size: int = 5,
-        overlap: int = 2,
+        window_size: int = STAGE2_WINDOW_SIZE,
+        overlap: int = STAGE2_OVERLAP,
         jobs_dir: Optional[str] = None
     ):
         """
         Args:
             vision_analyzer: VisionAnalyzerインスタンス
-            stage1_filter: Stage1フィルター（指定しない場合はダミー）
-            window_size: Stage2スライディングウィンドウサイズ
-            overlap: Stage2オーバーラップ
+            stage1_filter: Stage1フィルター（指定しない場合はDINOv3Stage1Filter）
+            window_size: Stage2スライディングウィンドウサイズ（デフォルト: config.STAGE2_WINDOW_SIZE）
+            overlap: Stage2オーバーラップ（デフォルト: config.STAGE2_OVERLAP）
             jobs_dir: ジョブ出力ディレクトリ（指定しない場合は backend/jobs）
         """
         self.vision_analyzer = vision_analyzer

@@ -212,13 +212,10 @@ def analyze_sequence(request: AnalyzeSequenceRequest):
         # フレームパス抽出
         frame_paths = [frame['image_path'] for frame in sequence]
 
-        # 二段階フィルタリングパイプライン
-        pipeline = TwoStagePipeline(
-            vision_analyzer=analyzer,
-            window_size=5,
-            overlap=2
-        )
+        # 二段階フィルタリングパイプライン（パラメータはconfig.pyで定義）
+        pipeline = TwoStagePipeline(vision_analyzer=analyzer)
 
+        import uuid
         job_id = f"job_{uuid.uuid4().hex[:8]}"
         manifest, final_manifest = pipeline.process(
             video_id=request.video_id,
@@ -316,12 +313,8 @@ async def upload_video(video: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="No frames extracted from video")
 
     try:
-        # 二段階フィルタリングパイプライン
-        pipeline = TwoStagePipeline(
-            vision_analyzer=analyzer,
-            window_size=5,
-            overlap=2
-        )
+        # 二段階フィルタリングパイプライン（パラメータはconfig.pyで定義）
+        pipeline = TwoStagePipeline(vision_analyzer=analyzer)
 
         manifest, final_manifest = pipeline.process(
             video_id=video.filename,
