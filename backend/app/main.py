@@ -1,12 +1,18 @@
 """Surgical-Recap Backend API"""
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import shutil
+import json
+import uuid
+from datetime import datetime
+
 
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
@@ -16,6 +22,23 @@ app = FastAPI(
     description="AI搭載型の手術動画即時分析・教育プラットフォーム",
     version="0.1.0"
 )
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+STATIC_DIR = BASE_DIR / "static"
+VIDEO_DIR = STATIC_DIR / "videos"
+
+# Serve /static/* so the video URLs work
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+
+COMMENTS_DIR = BASE_DIR / "comments"
+COMMENTS_DIR.mkdir(parents=True, exist_ok=True)
+
+CHATS_DIR = BASE_DIR / "chats"
+CHATS_DIR.mkdir(parents=True, exist_ok=True)
+
+
 
 # CORS設定（Next.jsフロントエンドからのアクセスを許可）
 app.add_middleware(
@@ -232,6 +255,410 @@ def analyze_sequence(request: AnalyzeSequenceRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+###########################################################
+##################### chat endpoint #######################
+###########################################################
+
+class ChatRequest(BaseModel):
+    message: str
+    video_title: str | None = None
+    timestamp: float | None = None
+
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
+class ChatMessageRequest(BaseModel):
+    message: str
+    timestamp: float | None = None
+
+
+class ChatCreateResponse(BaseModel):
+    id: str
+    created_at: str
+    title: str
+
+
+class ChatListItem(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    num_messages: int
+
+
+class ChatHistoryResponse(BaseModel):
+    id: str
+    messages: list
+
+
+def _chats_file(video_name: str) -> Path:
+    return CHATS_DIR / f"{video_name}.json"
+
+
+def _load_chats(video_name: str) -> dict:
+    path = _chats_file(video_name)
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+
+def _save_chats(video_name: str, chats: dict):
+    path = _chats_file(video_name)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(chats, f, ensure_ascii=False, indent=2)
+
+
+@app.get("/api/videos/{video_name}/chats")
+def list_chats(video_name: str):
+    chats = _load_chats(video_name)
+    items = []
+
+    for chat_id, chat in chats.items():
+        msgs = chat.get("messages", [])
+    
+        # Make a good title
+        first_user = next((m for m in msgs if m["role"] == "user"), None)
+        #title = first_user["text"][:30] + "…" if first_user else "New chat"
+
+        items.append({
+            "id": chat_id,
+            "title": chat.get("title"),
+            "created_at": chat["created_at"],
+            "num_messages": len(msgs),
+        })
+
+    
+    # newest first
+    items.sort(key=lambda x: x["created_at"], reverse=True)
+    return {"chats": items}
+
+
+@app.post("/api/videos/{video_name}/chats", response_model=ChatCreateResponse)
+def create_chat(video_name: str):
+    chats = _load_chats(video_name)
+    chat_id = str(uuid.uuid4())
+    chat_title = f"Chat {len(chats) + 1}"
+    now = datetime.utcnow().isoformat() + "Z"
+
+    chats[chat_id] = {
+        "id": chat_id,
+        "created_at": now,
+        "messages": [],
+        "title": chat_title
+    }
+
+    _save_chats(video_name, chats)
+
+    return ChatCreateResponse(id=chat_id, created_at=now, title=chat_title)
+
+
+@app.get("/api/videos/{video_name}/chats/{chat_id}", response_model=ChatHistoryResponse)
+def get_chat(video_name: str, chat_id: str):
+    chats = _load_chats(video_name)
+    if chat_id not in chats:
+        raise HTTPException(404, "Chat not found")
+
+    return {
+        "id": chat_id,
+        "messages": chats[chat_id]["messages"]
+    }
+
+
+@app.post("/api/videos/{video_name}/chats/{chat_id}/message")
+def send_chat_message(video_name: str, chat_id: str, req: ChatMessageRequest):
+    chats = _load_chats(video_name)
+    if chat_id not in chats:
+        raise HTTPException(404, "Chat not found")
+
+    chat = chats[chat_id]
+    messages = chat["messages"]
+
+    # Store user message
+    user_msg = {
+        "role": "user",
+        "text": req.message,
+        "timestamp": req.timestamp or 0
+    }
+    messages.append(user_msg)
+
+    # Build LLM context 
+    llm_input = [
+        {
+            "role": "system",
+            "content": f"You are a surgical video assistant. Video: {video_name}"
+        }
+    ]
+
+    for m in messages:
+        llm_input.append({
+            "role": m["role"],
+            "content": f"[t={m['timestamp']}s] {m['text']}"
+        })
+
+    # ⚠️ Replace with your real LLM call:
+    reply_text = f"Llama response placeholder"
+
+    # Store assistant reply
+    assistant_msg = {
+        "role": "assistant",
+        "text": reply_text,
+        "timestamp": req.timestamp or 0
+    }
+    messages.append(assistant_msg)
+
+    # Save back to JSON
+    _save_chats(video_name, chats)
+
+    return {
+        "reply": reply_text,
+        "messages": messages,
+        "chat_meta": {
+            "id": chat_id,
+            "created_at": chat["created_at"],
+            "num_messages": len(messages)
+        }
+    }
+
+
+###########################################################
+########### video serve and upload endpoints ##############
+###########################################################
+
+
+@app.get("/api/videos")
+def get_videos():
+    """Return list of available video files from static/videos."""
+    if not VIDEO_DIR.exists():
+        raise HTTPException(status_code=500, detail="Video directory not found")
+
+    videos = []
+    for f in VIDEO_DIR.iterdir():
+        if f.suffix.lower() in [".mp4", ".mov", ".webm", ".m4v"]:
+            videos.append({
+                "title": f.name,
+                "description": f"Video file: {f.name}",
+                "url": f"/static/videos/{f.name}",
+            })
+
+    return videos
+
+@app.post("/api/videos/uploadLocal")
+async def upload_video_local(file: UploadFile = File(...)):
+    """Upload a video file and save it into static/videos."""
+    # Validate extension
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in [".mp4", ".mov", ".webm", ".m4v"]:
+        raise HTTPException(status_code=400, detail="Unsupported video format")
+
+    # Destination path
+    dest_path = VIDEO_DIR / file.filename
+
+    try:
+        # Stream file to disk
+        with dest_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+
+    return {
+        "status": "ok",
+        "filename": file.filename,
+        "url": f"/static/videos/{file.filename}",
+        "message": "Video uploaded successfully",
+    }
+
+@app.delete("/api/videos/{video_name}")
+def delete_video(video_name: str):
+    """
+    Delete a video file and its associated comments.
+    video_name is the filename (e.g. 'sample1.mp4').
+    """
+    # Basic safety: avoid directory traversal
+    if "/" in video_name or "\\" in video_name:
+        raise HTTPException(status_code=400, detail="Invalid video name")
+
+    video_path = VIDEO_DIR / video_name
+    comments_path = _comments_file(video_name)
+
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    try:
+        # Delete video file
+        video_path.unlink()
+
+        # Delete comments file if exists
+        if comments_path.exists():
+          comments_path.unlink()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete video: {e}")
+
+    return {
+        "status": "ok",
+        "message": f"Deleted video {video_name}",
+    }
+
+###########################################################
+#################### comment endpoints ####################
+###########################################################
+
+
+class Comment(BaseModel):
+    timestamp: float
+    text: str
+    parent_id: Optional[int] = None
+    likes: int = 0
+
+
+class CommentUpdate(BaseModel):
+    text: str
+
+
+def _comments_file(video_name: str) -> Path:
+    return COMMENTS_DIR / f"{video_name}.json"
+
+
+def _load_comments(video_name: str) -> List[dict]:
+    path = _comments_file(video_name)
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            comments = json.load(f)
+    except Exception:
+        return []
+
+    changed = False
+
+    # Ensure id + likes fields exist
+    max_id = 0
+    for c in comments:
+        if "id" in c and isinstance(c["id"], int):
+            max_id = max(max_id, c["id"])
+        else:
+            changed = True
+
+        if "likes" not in c:   # << new
+            c["likes"] = 0
+            changed = True
+
+    if changed:
+        _save_comments(video_name, comments)
+
+    return comments
+
+
+def _save_comments(video_name: str, comments: List[dict]) -> None:
+    path = _comments_file(video_name)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(comments, f, ensure_ascii=False, indent=2)
+
+
+@app.get("/api/videos/{video_name}/comments")
+def get_video_comments(video_name: str):
+    """Get comments for a given video (by filename)."""
+    comments = _load_comments(video_name)
+    return {"comments": comments}
+
+
+@app.post("/api/videos/{video_name}/comments")
+def add_video_comment(video_name: str, comment: Comment):
+    """Add a comment or reply for a given video."""
+    video_path = VIDEO_DIR / video_name
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    comments = _load_comments(video_name)
+
+    # Determine new id
+    max_id = max((c.get("id", 0) for c in comments), default=0)
+    new_id = max_id + 1
+
+    comment_dict = {
+        "id": new_id,
+        "timestamp": comment.timestamp,
+        "text": comment.text,
+        "parent_id": comment.parent_id,
+    }
+    comments.append(comment_dict)
+    _save_comments(video_name, comments)
+
+    return {"status": "ok", "comment": comment_dict}
+
+
+@app.put("/api/videos/{video_name}/comments/{comment_id}")
+def update_video_comment(video_name: str, comment_id: int, update: CommentUpdate):
+    """Edit a comment's text."""
+    comments = _load_comments(video_name)
+    for c in comments:
+        if c.get("id") == comment_id:
+            c["text"] = update.text
+            _save_comments(video_name, comments)
+            return {"status": "ok", "comment": c}
+
+    raise HTTPException(status_code=404, detail="Comment not found")
+
+
+@app.delete("/api/videos/{video_name}/comments/{comment_id}")
+def delete_video_comment(video_name: str, comment_id: int):
+    """Delete a comment and its replies (cascade)."""
+    comments = _load_comments(video_name)
+    if not comments:
+        raise HTTPException(status_code=404, detail="No comments for this video")
+
+    # Cascade: delete comment + all descendants
+    to_delete = {comment_id}
+    changed = True
+    while changed:
+        changed = False
+        for c in comments:
+            pid = c.get("parent_id")
+            cid = c.get("id")
+            if pid in to_delete and cid not in to_delete:
+                to_delete.add(cid)
+                changed = True
+
+    new_comments = [c for c in comments if c.get("id") not in to_delete]
+
+    if len(new_comments) == len(comments):
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    _save_comments(video_name, new_comments)
+    return {"status": "ok", "deleted_ids": list(to_delete)}
+
+
+@app.post("/api/videos/{video_name}/comments/{comment_id}/like")
+def like_comment(video_name: str, comment_id: int):
+    """Increment the like counter for a comment."""
+    comments = _load_comments(video_name)
+
+    for c in comments:
+        if c.get("id") == comment_id:
+            c["likes"] = c.get("likes", 0) + 1
+            _save_comments(video_name, comments)
+            return {"status": "ok", "likes": c["likes"]}
+
+    raise HTTPException(status_code=404, detail="Comment not found")
+
+
+@app.post("/api/videos/{video_name}/comments/{comment_id}/unlike")
+def unlike_comment(video_name: str, comment_id: int):
+    """Decrement the like counter (not below 0)."""
+    comments = _load_comments(video_name)
+
+    for c in comments:
+        if c.get("id") == comment_id:
+            c["likes"] = max(0, c.get("likes", 0) - 1)
+            _save_comments(video_name, comments)
+            return {"status": "ok", "likes": c["likes"]}
+
+    raise HTTPException(status_code=404, detail="Comment not found")
 
 
 if __name__ == "__main__":
