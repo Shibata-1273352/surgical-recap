@@ -6,11 +6,10 @@ Sliding windowでフレームをバッチ処理し、
 """
 
 from typing import List, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import weave
 
 from .models import Manifest, FinalManifest, SelectedFrame, FrameMetadata
-from .config import STAGE2_WINDOW_SIZE, STAGE2_OVERLAP, STAGE2_MAX_WORKERS
+from .config import STAGE2_WINDOW_SIZE, STAGE2_OVERLAP
 
 
 class VLMStage2Filter:
@@ -151,7 +150,9 @@ class VLMStage2Filter:
         manifest: Manifest
     ) -> FinalManifest:
         """
-        Stage1の結果から医学的に重要なフレームを選択（並列処理）
+        Stage1の結果から医学的に重要なフレームを選択（同期処理）
+
+        Rate limit対策のため並列処理を廃止し、逐次処理で実行
 
         Args:
             manifest: Stage1のManifest
@@ -165,25 +166,20 @@ class VLMStage2Filter:
         # スライディングウィンドウ生成
         windows = self._generate_sliding_windows(frames, self.window_size)
 
-        # 並列でバッチ処理
-        with ThreadPoolExecutor(max_workers=STAGE2_MAX_WORKERS) as executor:
-            futures = {
-                executor.submit(
-                    self._process_single_batch,
+        print(f"Stage2: Processing {len(windows)} batches sequentially...")
+
+        # 逐次でバッチ処理（Rate limit対策）
+        for batch_id, window_frames in windows:
+            print(f"  Processing batch {batch_id + 1}/{len(windows)}...")
+            try:
+                selections = self._process_single_batch(
                     batch_id,
                     window_frames,
                     len(frames)
-                ): batch_id
-                for batch_id, window_frames in windows
-            }
-
-            for future in as_completed(futures):
-                batch_id = futures[future]
-                try:
-                    selections = future.result()
-                    all_selections.extend(selections)
-                except Exception as e:
-                    print(f"Warning: Batch {batch_id} future failed: {e}")
+                )
+                all_selections.extend(selections)
+            except Exception as e:
+                print(f"Warning: Batch {batch_id} failed: {e}")
 
         # 重複除去
         unique_selections = self._deduplicate_selections(all_selections)

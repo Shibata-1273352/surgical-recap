@@ -15,7 +15,8 @@ STAGE1_FPS: float = 1.0
 STAGE1_BATCH_SIZE: int = 64
 
 # 隣接フレーム間の類似度閾値（これ以下でシーン変化と判定）
-STAGE1_SIMILARITY_THRESHOLD: float = 0.98
+# 0.85: 約32%に削減、0.90: 約52%に削減
+STAGE1_SIMILARITY_THRESHOLD: float = 0.85
 
 # グループ内サンプリング間隔（秒）
 STAGE1_SAMPLE_INTERVAL_SEC: int = 10

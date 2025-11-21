@@ -186,7 +186,6 @@ def analyze_sequence(request: AnalyzeSequenceRequest):
     from .vision import get_vision_analyzer
     from .analize_sequence.pipeline import TwoStagePipeline
     from .analize_sequence.models import TwoStageFilterResponse
-    from .vision import SURGICAL_VISION_SYSTEM_PROMPT, SURGICAL_VISION_USER_PROMPT
 
     # Get dataset loader
     loader = get_dataset_loader()
@@ -215,36 +214,19 @@ def analyze_sequence(request: AnalyzeSequenceRequest):
         # 二段階フィルタリングパイプライン（パラメータはconfig.pyで定義）
         pipeline = TwoStagePipeline(vision_analyzer=analyzer)
 
-        import uuid
-        job_id = f"job_{uuid.uuid4().hex[:8]}"
         manifest, final_manifest = pipeline.process(
             video_id=request.video_id,
-            frame_paths=frame_paths,
-            job_id=job_id
+            frame_paths=frame_paths
         )
 
-        # 選択されたフレームのみ解析
-        analysis_results = []
-        for selected_frame in final_manifest.selected_frames:
-            try:
-                result = analyzer.analyze_frame(
-                    image_path=selected_frame.file_path,
-                    system_prompt=SURGICAL_VISION_SYSTEM_PROMPT,
-                    user_prompt=SURGICAL_VISION_USER_PROMPT
-                )
-                result['file_path'] = selected_frame.file_path
-                result['timestamp'] = selected_frame.timestamp
-                analysis_results.append(result)
-            except Exception as e:
-                analysis_results.append({
-                    "error": str(e),
-                    "file_path": selected_frame.file_path,
-                    "timestamp": selected_frame.timestamp
-                })
+        # フレーム解析パイプライン
+        from .frame_analysis import FrameAnalysisPipeline
+        frame_analysis_pipeline = FrameAnalysisPipeline(vision_analyzer=analyzer)
+        analysis_results = frame_analysis_pipeline.analyze(final_manifest)
 
         return TwoStageFilterResponse(
             status="ok",
-            job_id=job_id,
+            job_id=request.video_id,
             video_id=request.video_id,
             manifest=manifest,
             final_manifest=final_manifest,
@@ -267,9 +249,10 @@ async def upload_video(video: UploadFile = File(...)):
     3. 選択フレームのVision解析
 
     Returns:
-        TwoStageFilterResponse with manifest, final_manifest, and analysis results
+        解析結果
     """
     import cv2
+    import uuid
     from .vision import get_vision_analyzer
     from .analize_sequence.pipeline import TwoStagePipeline
 
@@ -278,33 +261,39 @@ async def upload_video(video: UploadFile = File(...)):
     if not analyzer:
         raise HTTPException(status_code=500, detail="Vision analyzer not available. Check SAMBANOVA_API_KEY")
 
-    # 一時ディレクトリ作成
-    import tempfile
-    temp_dir = Path(tempfile.mkdtemp())
+    # uploads/{video_id}/ ディレクトリ作成
+    video_id = f"{uuid.uuid4().hex[:8]}"
+    uploads_dir = Path(__file__).parent.parent / "uploads" / video_id
+    uploads_dir.mkdir(parents=True, exist_ok=True)
 
     # 動画ファイルを保存
-    video_path = temp_dir / video.filename
+    video_path = uploads_dir / video.filename
     with open(video_path, "wb") as f:
         content = await video.read()
         f.write(content)
 
     # フレーム抽出
-    frames_dir = temp_dir / "frames"
+    frames_dir = uploads_dir / "frames"
     frames_dir.mkdir(exist_ok=True)
 
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frame_paths = []
     frame_idx = 0
+    extracted = 0
+    sample_interval = int(fps)  # 1fpsサンプリング
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        frame_path = frames_dir / f"frame_{frame_idx:06d}.jpg"
-        cv2.imwrite(str(frame_path), frame)
-        frame_paths.append(str(frame_path))
+        # 1fpsサンプリング（fpsフレームごとに1枚抽出）
+        if frame_idx % sample_interval == 0:
+            frame_path = frames_dir / f"frame_{extracted:06d}.jpg"
+            cv2.imwrite(str(frame_path), frame)
+            frame_paths.append(str(frame_path))
+            extracted += 1
         frame_idx += 1
 
     cap.release()
@@ -314,21 +303,29 @@ async def upload_video(video: UploadFile = File(...)):
 
     try:
         # 二段階フィルタリングパイプライン（パラメータはconfig.pyで定義）
-        pipeline = TwoStagePipeline(vision_analyzer=analyzer)
+        pipeline = TwoStagePipeline(
+            vision_analyzer=analyzer,
+            output_dir=str(uploads_dir)
+        )
 
         manifest, final_manifest = pipeline.process(
-            video_id=video.filename,
+            video_id=video_id,
             frame_paths=frame_paths
         )
 
         # フレーム解析パイプライン
         from .frame_analysis import FrameAnalysisPipeline
-        frame_analysis_pipeline = FrameAnalysisPipeline(vision_analyzer=analyzer)
+        frame_analysis_pipeline = FrameAnalysisPipeline(
+            vision_analyzer=analyzer,
+            output_dir=str(uploads_dir)
+        )
         analysis_results = frame_analysis_pipeline.analyze(final_manifest)
 
         return {
             "status": "ok",
-            "video_id": video.filename,
+            "video_id": video_id,
+            "video_path": str(video_path),
+            "uploads_dir": str(uploads_dir),
             "total_frames": len(frame_paths),
             "selected_frames": len(final_manifest.selected_frames),
             "analysis_results": analysis_results

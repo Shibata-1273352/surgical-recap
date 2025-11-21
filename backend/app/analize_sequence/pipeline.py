@@ -30,7 +30,7 @@ class TwoStagePipeline:
         stage1_filter: Optional[Stage1FilterProtocol] = None,
         window_size: int = STAGE2_WINDOW_SIZE,
         overlap: int = STAGE2_OVERLAP,
-        jobs_dir: Optional[str] = None
+        output_dir: Optional[str] = None
     ):
         """
         Args:
@@ -38,7 +38,7 @@ class TwoStagePipeline:
             stage1_filter: Stage1フィルター（指定しない場合はDINOv3Stage1Filter）
             window_size: Stage2スライディングウィンドウサイズ（デフォルト: config.STAGE2_WINDOW_SIZE）
             overlap: Stage2オーバーラップ（デフォルト: config.STAGE2_OVERLAP）
-            jobs_dir: ジョブ出力ディレクトリ（指定しない場合は backend/jobs）
+            output_dir: 出力ディレクトリ（指定しない場合はmanifest保存をスキップ）
         """
         self.vision_analyzer = vision_analyzer
         self.stage1_filter = stage1_filter or DINOv3Stage1Filter()
@@ -47,25 +47,25 @@ class TwoStagePipeline:
             window_size=window_size,
             overlap=overlap
         )
-        # デフォルトは backend/jobs
-        self.jobs_dir = Path(jobs_dir) if jobs_dir else Path(__file__).parent.parent.parent / "jobs"
+        self.output_dir = Path(output_dir) if output_dir else None
 
-    def _save_manifest(self, job_id: str, filename: str, data: dict) -> Path:
+    def _save_json(self, filename: str, data: dict) -> Optional[Path]:
         """
-        マニフェストをJSONファイルとして保存
+        JSONファイルとして保存
 
         Args:
-            job_id: ジョブID
             filename: ファイル名 (manifest.json or final_manifest.json)
             data: 保存するデータ
 
         Returns:
-            保存先パス
+            保存先パス（output_dirが未設定の場合はNone）
         """
-        output_dir = self.jobs_dir / job_id / "keyframes"
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if self.output_dir is None:
+            return None
 
-        output_path = output_dir / filename
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = self.output_dir / filename
+
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -75,8 +75,7 @@ class TwoStagePipeline:
     def process(
         self,
         video_id: str,
-        frame_paths: List[str],
-        job_id: Optional[str] = None
+        frame_paths: List[str]
     ) -> Tuple[Manifest, FinalManifest]:
         """
         二段階フィルタリング実行
@@ -84,38 +83,28 @@ class TwoStagePipeline:
         Args:
             video_id: 動画ID
             frame_paths: 全フレームのローカルパス
-            job_id: ジョブID（指定しない場合は自動生成）
 
         Returns:
             (manifest, final_manifest)
         """
-        if job_id is None:
-            job_id = f"job_{uuid.uuid4().hex[:8]}"
-
         # Stage1: 視覚的類似度フィルタリング
         manifest = self.stage1_filter.filter_frames(
             video_id=video_id,
             frame_paths=frame_paths,
-            job_id=job_id
+            job_id=video_id  # video_idをjob_idとして使用
         )
 
         # manifest.json を保存
-        manifest_path = self._save_manifest(
-            job_id=job_id,
-            filename="manifest.json",
-            data=manifest.model_dump()
-        )
-        print(f"Saved manifest: {manifest_path}")
+        manifest_path = self._save_json("manifest.json", manifest.model_dump())
+        if manifest_path:
+            print(f"Saved manifest: {manifest_path}")
 
         # Stage2: VLM意味的フィルタリング
         final_manifest = self.stage2_filter.filter_frames(manifest)
 
         # final_manifest.json を保存
-        final_manifest_path = self._save_manifest(
-            job_id=job_id,
-            filename="final_manifest.json",
-            data=final_manifest.model_dump()
-        )
-        print(f"Saved final_manifest: {final_manifest_path}")
+        final_manifest_path = self._save_json("final_manifest.json", final_manifest.model_dump())
+        if final_manifest_path:
+            print(f"Saved final_manifest: {final_manifest_path}")
 
         return manifest, final_manifest
