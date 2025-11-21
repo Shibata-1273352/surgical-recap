@@ -86,8 +86,6 @@ checkpoints/
 
 # Video/Image frames
 frames/
-videos/
-*.mp4
 *.avi
 *.mov
 *.jpg
